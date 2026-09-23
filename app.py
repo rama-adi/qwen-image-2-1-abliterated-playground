@@ -312,7 +312,7 @@ def history_records() -> list[dict]:
         settings = {key: metadata.get(key, request.get(key)) for key in (
             'scene', 'prompt', 'negative', 'characters', 'width', 'height', 'steps', 'cfg', 'seed',
             'backend', 'precision', 'offload', 'vae_cpu', 'vae_tiling', 'kv_cache', 'rewrite',
-            'live_preview', 'preview_interval', 'input_mode', 'source_history_id', 'reference_id', 'references', 'model_revisions')}
+            'live_preview', 'preview_interval', 'input_mode', 'source_history_id', 'reference_id', 'references', 'model_settings', 'model_revisions')}
         lora = metadata.get('lora', request.get('lora'))
         settings['lora'] = {k: lora.get(k) for k in ('id', 'name', 'sha256', 'strength', 'format')} if lora else None
         settings['has_reference'] = bool(metadata.get('references')) or any((directory / ('reference.' + ext)).is_file() for ext in ('png', 'jpg', 'webp'))
@@ -771,6 +771,8 @@ class Handler(BaseHTTPRequestHandler):
                                 "created_at": time.time()}
                     metadata.update({key: data.get(key) for key in ('negative', 'characters', 'reference_id')})
                     metadata['references'] = selected_references(data)
+                    if BACKEND == 'sd-cpp':
+                        metadata['model_settings'] = {key: data.get('settings', {}).get(key) or value for key, value in DEFAULTS.items()}
                     metadata.update(cfg=float(data.get('cfg', 6)), offload=bool(data.get('offload', BACKEND == 'diffusers')),
                         vae_cpu=bool(data.get('vae_cpu', True)), live_preview=bool(data.get('live_preview', True)),
                         preview_interval=int(data.get('preview_interval', 1)),

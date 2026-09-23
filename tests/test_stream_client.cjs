@@ -34,3 +34,36 @@ test('WebSocket fallback retries and a live connection stops HTTP polling', asyn
   await vm.runInContext('poll()', context);
   assert.equal([...timers.values()].filter(v=>v.delay===1000).length, 0);
 });
+
+test('Reuse restores all sidebar controls, assets and actual seed without generating', async () => {
+  const elements = new Map(); let persisted = 0;
+  const element = id => {
+    if (!elements.has(id)) elements.set(id, {value:'stale',checked:true,hidden:false,focus(){}});
+    return elements.get(id);
+  };
+  const context = vm.createContext({document:{getElementById:element,querySelector:()=>({dispatchEvent(){persisted++;}})},
+    structuredClone, Event:class {}, localStorage:{setItem(){}}});
+  const source=fs.readFileSync('static/app.js','utf8').replace('init().catch(error => showError(error.message));','');
+  vm.runInContext(source+`
+    loadReferences=async()=>{}; loadLoras=async()=>{}; renderCharacters=()=>{};
+    updateInputMode=()=>{}; renderSettings=()=>{};
+    state.backend='diffusers'; state.loras=[{id:'new-id',sha256:'hash'}];
+    state.references=[{id:'ref',name:'pose',image:'/reference.png'}];
+  `,context);
+  const settings={scene:'A boat',negative:'',width:1024,height:768,steps:20,cfg:3,seed:79,input_mode:'style',preview_interval:4,
+    offload:false,vae_cpu:false,live_preview:false,rewrite:false,characters:[],lora:{id:'old-id',sha256:'hash',strength:0},
+    references:[{id:'ref',source:'reference',role:'pose',note:'left person'}]};
+  context.fixture={settings};
+  await vm.runInContext('reuseSettings(fixture)',context);
+  assert.equal(element('scene').value,'A boat'); assert.equal(element('negative').value,'');
+  assert.equal(element('seed').value,79); assert.equal(element('cfg').value,3);
+  assert.equal(element('offload').checked,false); assert.equal(element('livePreview').checked,false);
+  assert.equal(element('previewInterval').disabled,true); assert.equal(element('loraSelect').value,'new-id');
+  assert.equal(element('loraStrength').value,0); assert.equal(persisted,1);
+  assert.equal(vm.runInContext('state.referenceCards[0].role',context),'pose');
+  assert.equal(vm.runInContext('state.characters.length',context),0);
+  assert.equal(vm.runInContext('state.job',context),null);
+  context.fixture={settings:{...settings,scene:'Should not apply',lora:{id:'missing',name:'lost'}}};
+  await assert.rejects(vm.runInContext('reuseSettings(fixture)',context),/Upload lost/);
+  assert.equal(element('scene').value,'A boat');
+});

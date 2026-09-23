@@ -1,5 +1,5 @@
 const $ = id => document.getElementById(id);
-const state = { socket: null, reconnect: null, handshake: null, failures: 0, defaults: {}, settings: {}, characters: [], references: [], referenceCards: [], job: null, timer: null, history: [], selectedHistoryId: null, previewStep: 0 };
+const state = { socket: null, reconnect: null, handshake: null, failures: 0, defaults: {}, settings: {}, characters: [], references: [], referenceCards: [], loras: [], backend: null, job: null, timer: null, history: [], selectedHistoryId: null, previewStep: 0 };
 const modelLabels = { sd_cli: 'sd-cli executable', diffusion: 'Qwen Image 2.1 diffusion model', encoder: 'Heretic text encoder', vision: 'Heretic vision projector GGUF', vae: 'Qwen Image 2.1 VAE' };
 
 function addCharacter(data = {}) {
@@ -66,24 +66,68 @@ function showImage(url, item = null) {
   if (item) {
     const title = document.createElement('h3'); title.textContent = 'Experiment settings';
     const description = document.createElement('p'); description.textContent = item.scene;
-    const copy = document.createElement('button'); copy.type = 'button'; copy.className = 'secondary'; copy.textContent = 'Copy all settings';
+    const copy = document.createElement('button'); copy.type = 'button'; copy.className = 'secondary'; copy.textContent = 'Reuse all settings';
     const settings = item.settings || {scene:item.scene, prompt:item.prompt, width:item.width, height:item.height, steps:item.steps, seed:item.seed};
     const text = JSON.stringify(settings, null, 2);
     const details = document.createElement('details');
     const summary = document.createElement('summary'); summary.textContent = `${item.width || '?'} × ${item.height || '?'} · ${item.steps || '?'} steps · CFG ${settings.cfg ?? '?'} · Seed ${item.seed ?? '?'}`;
     const values = document.createElement('pre'); values.textContent = text;
     copy.onclick = async () => {
-      try { await navigator.clipboard.writeText(text); copy.textContent = 'Copied!'; }
-      catch {
-        details.open = true;
-        const range = document.createRange(); range.selectNodeContents(values);
-        const selection = window.getSelection(); selection.removeAllRanges(); selection.addRange(range);
-        copy.textContent = 'Settings selected — copy with Ctrl/Cmd+C';
-      }
+      copy.disabled = true;
+      try { await reuseSettings(item); copy.textContent = 'Settings restored'; }
+      catch (error) { showError(error.message); }
+      finally { copy.disabled = false; }
     };
     details.append(summary, values); meta.append(title, description, copy, details);
     meta.hidden = false;
   } else meta.hidden = true;
+}
+async function reuseSettings(item) {
+  const settings = item.settings || item;
+  await loadReferences(); await loadLoras();
+  let lora = null;
+  if (settings.lora) {
+    lora = state.loras.find(entry => entry.id === settings.lora.id || (settings.lora.sha256 && entry.sha256 === settings.lora.sha256));
+    if (!lora) throw new Error(`Upload ${settings.lora.name || 'the saved LoRA'} again before reusing these settings.`);
+  }
+  let refs = settings.references || [];
+  if (!refs.length && settings.has_reference) {
+    // Older renders retain a copy of their single input alongside the output.
+    refs = [{id:item.id, source:'reference', role:'style', note:''}];
+  }
+  const cards = refs.map(ref => {
+    const saved = ref.source === 'history' ? state.history.find(entry=>entry.id===ref.id) : state.references.find(entry=>entry.id===ref.id);
+    if (!saved) throw new Error('A saved reference is no longer available. Add it again before reusing these settings.');
+    return {...ref, name:saved.name || saved.scene || 'Saved reference', image:saved.image};
+  });
+  const fields = {scene:'scene', negative:'negative', width:'width', height:'height', steps:'steps', cfg:'cfg', seed:'seed', input_mode:'inputMode', preview_interval:'previewInterval'};
+  const missing = [];
+  for (const [key,id] of Object.entries(fields)) {
+    if (settings[key] !== null && settings[key] !== undefined) $(id).value = settings[key];
+    else missing.push(key);
+  }
+  for (const [key,id] of Object.entries({offload:'offload', vae_cpu:'vaeCpu', live_preview:'livePreview', rewrite:'rewrite'})) {
+    if (settings[key] !== null && settings[key] !== undefined) $(id).checked = Boolean(settings[key]);
+    else missing.push(key);
+  }
+  if (Array.isArray(settings.characters)) state.characters = structuredClone(settings.characters);
+  else missing.push('characters');
+  renderCharacters();
+  state.referenceCards = cards;
+  $('referenceInput').value = ''; $('referenceSelect').value = '';
+  $('loraSelect').value = lora ? lora.id : '';
+  $('loraStrength').value = settings.lora?.strength ?? 1;
+  if (settings.model_settings && state.backend === 'sd-cpp' && settings.backend === 'sd-cpp') {
+    state.settings = {...settings.model_settings}; renderSettings();
+    localStorage.setItem('qwen-image-2-1-abliterated-playground-model-paths', JSON.stringify(state.settings));
+  }
+  if ($('rewriteControl').hidden) $('rewrite').checked = false;
+  if (state.backend === 'diffusers') $('vaeCpu').checked = false;
+  updateInputMode();
+  $('previewInterval').disabled = !$('livePreview').checked;
+  document.querySelector('.editor').dispatchEvent(new Event('change', {bubbles:true}));
+  showError(missing.length ? `Older render: ${missing.join(', ')} were not recorded; those controls were left unchanged.` : '');
+  setStatus('Settings restored'); $('scene').focus();
 }
 function updateInputMode() {
   const editing = $('inputMode').value === 'edit';
@@ -339,7 +383,7 @@ function renderSettings() {
   }
 }
 async function loadLoras(selected = $('loraSelect').value) {
-  const result = await api('/api/loras');
+  const result = await api('/api/loras'); state.loras = result.items;
   const select = $('loraSelect'); select.replaceChildren(new Option('None', ''));
   for (const item of result.items) select.add(new Option(item.name, item.id));
   if (result.items.some(item => item.id === selected)) select.value = selected;
@@ -391,7 +435,7 @@ function preserveConfig(backend) {
   window.addEventListener('pagehide', save);
 }
 async function init() {
-  const config = await api('/api/config'); state.defaults = config.defaults;
+  const config = await api('/api/config'); state.defaults = config.defaults; state.backend = config.backend;
   $('vaeCpu').checked = Boolean(config.vae_cpu_default);
   $('rewriteControl').hidden = !config.rewriter;
   if (config.backend === 'diffusers') {
