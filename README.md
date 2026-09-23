@@ -80,6 +80,8 @@ For a **private GHCR package**, create a [GitHub personal access token (classic)
 
 The workflow publishes the image; it does not rent a GPU or deploy paid Pods. No `RUNPOD_API_KEY` is needed for deployment through the console.
 
+Progress uses WebSockets on the same HTTP port. The generation log labels the connection as **WebSocket live** or **HTTP fallback**. After repeated socket failures, fallback polling keeps progress available and retries WebSockets every 30 seconds. Preview PNGs still load over HTTP. If fallback persists, inspect the browser's Network → WS handshake status and the Pod logs; a successful upgrade returns `101`.
+
 ### Repeated renders and history
 
 Keep **Expand scene with Heretic** off when you want uninterrupted warm pipeline reuse. Uncheck **Keep model weights in RAM** to keep the entire image pipeline on GPU between renders, subject to available VRAM; with it checked, weights stay loaded with CPU offloading. Live previews keep the VAE resident on GPU so each preview no longer offloads the diffusion model. This uses additional VRAM during preview decoding; disable previews if memory is tight. Look for `Reusing warm BF16 image pipeline` in subsequent job logs.

@@ -1,5 +1,5 @@
 const $ = id => document.getElementById(id);
-const state = { socket: null, reconnect: null, failures: 0, defaults: {}, settings: {}, characters: [], reference: '', sourceHistoryId: '', job: null, timer: null, history: [], selectedHistoryId: null, previewStep: 0 };
+const state = { socket: null, reconnect: null, handshake: null, failures: 0, defaults: {}, settings: {}, characters: [], reference: '', sourceHistoryId: '', job: null, timer: null, history: [], selectedHistoryId: null, previewStep: 0 };
 const modelLabels = { sd_cli: 'sd-cli executable', diffusion: 'Qwen Image 2.1 diffusion model', encoder: 'Heretic text encoder', vision: 'Heretic vision projector GGUF', vae: 'Qwen Image 2.1 VAE' };
 
 function addCharacter(data = {}) {
@@ -176,7 +176,7 @@ async function displayProgress(job) {
   $('log').scrollTop = $('log').scrollHeight;
   const current = job.step || 0;
   const total = job.total_steps || 0;
-  const labels = { loading: 'Loading models', rewriting: 'Rewriting prompt', sampling: 'Sampling', preview: 'Decoding preview', decoding: 'Decoding final image' };
+  const labels = { loading: 'Loading models', encoding: 'Encoding prompt / first step', rewriting: 'Rewriting prompt', sampling: 'Sampling', preview: 'Decoding preview', decoding: 'Decoding final image' };
   const label = labels[job.stage] || job.status;
   const progressText = current ? `${label} · step ${current} / ${total}` : label;
   $('progressText').textContent = progressText;
@@ -199,6 +199,7 @@ async function displayProgress(job) {
   if (['done', 'error', 'cancelled'].includes(job.status)) {
     state.job = null;
     stopStream();
+    $('transportStatus').textContent = 'Stream finished';
     setBusy(false);
     $('previewBadge').hidden = true;
     $('progressText').textContent = job.status === 'done' ? 'Image complete' : job.status;
@@ -213,38 +214,45 @@ async function displayProgress(job) {
   }
 }
 function stopStream() {
-  clearTimeout(state.timer); clearTimeout(state.reconnect);
+  clearTimeout(state.timer); clearTimeout(state.reconnect); clearTimeout(state.handshake);
   if (state.socket) { state.socket.onclose = null; state.socket.close(); state.socket = null; }
 }
 async function poll() {
   const id = state.job;
   if (!id) return;
-  try { await displayProgress(await api('/api/jobs/' + id)); }
+  try {
+    const update = await api('/api/jobs/' + id);
+    if (state.job === id && (!state.socket || state.socket.readyState !== WebSocket.OPEN)) await displayProgress(update);
+  }
   catch (error) { $('logStep').textContent = 'Connection interrupted; retrying…'; }
-  if (state.job === id) state.timer = setTimeout(poll, 1000);
+  if (state.job === id && (!state.socket || state.socket.readyState !== WebSocket.OPEN)) state.timer = setTimeout(poll, 1000);
 }
 function streamProgress() {
   stopStream();
   const id = state.job;
   if (!id) return;
+  $('transportStatus').textContent = 'Connecting WebSocket…';
   const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
   const socket = new WebSocket(`${protocol}//${location.host}/api/jobs/${id}/events`);
   state.socket = socket;
-  socket.onopen = () => { state.failures = 0; };
+  state.handshake = setTimeout(() => { if (socket.readyState === WebSocket.CONNECTING) socket.close(); }, 10000);
+  socket.onopen = () => { clearTimeout(state.handshake); clearTimeout(state.timer); $('transportStatus').textContent = 'WebSocket live'; };
   socket.onmessage = event => {
     if (state.job !== id) return;
-    try { displayProgress(JSON.parse(event.data)).catch(error => showError(error.message)); }
+    try { const update = JSON.parse(event.data); state.failures = 0; displayProgress(update).catch(error => showError(error.message)); }
     catch { $('logStep').textContent = 'Invalid progress update; reconnecting…'; socket.close(); }
   };
   socket.onerror = () => socket.close();
-  socket.onclose = () => {
+  socket.onclose = event => {
+    clearTimeout(state.handshake);
     if (state.job !== id) return;
     state.failures += 1;
     if (state.failures >= 3) {
-      $('logStep').textContent = 'Using HTTP progress fallback';
+      $('transportStatus').textContent = `HTTP fallback · WS closed ${event.code}`;
       poll();
+      state.reconnect = setTimeout(streamProgress, 30000);
     } else {
-      $('logStep').textContent = 'Reconnecting progress stream…';
+      $('transportStatus').textContent = `Reconnecting WebSocket · ${event.code}`;
       state.reconnect = setTimeout(streamProgress, 1000 * state.failures);
     }
   };

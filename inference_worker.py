@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import sys
 import struct
+import time
 
 PIPELINE = None
 PIPELINE_KEY = None
@@ -24,7 +25,9 @@ def get_pipeline(root, request):
         print("Reusing warm BF16 image pipeline", flush=True)
         return PIPELINE
     release_pipeline()
+    started = time.monotonic()
     PIPELINE = load_pipeline(root, request)
+    print(f"Pipeline load completed in {time.monotonic() - started:.1f}s", flush=True)
     PIPELINE_KEY = key
     return PIPELINE
 
@@ -197,10 +200,12 @@ def render(request):
     pipe = get_pipeline(root, request)
     torch.cuda.reset_peak_memory_stats()
     print("Encoding prompt and running first sampling step…", flush=True)
+    emit_progress(stage="encoding", step=0)
+    sampling_started = time.monotonic()
 
     def progress(_pipe, step, _timestep, tensors):
         current = step + 1
-        print(f"Sampling {step + 1}/{request['steps']}", flush=True)
+        print(f"Sampling {step + 1}/{request['steps']} · {time.monotonic() - sampling_started:.1f}s since encoding started", flush=True)
         emit_progress(stage="sampling", step=current)
         if request.get("live_preview", True) and (current % request.get("preview_interval", 1) == 0 or current == request["steps"]):
             emit_progress(stage="preview", step=current)

@@ -84,6 +84,24 @@ class StreamingTests(unittest.TestCase):
         finished = self.messages_until(connection, ws, lambda message: message['status'] == 'done')
         self.assertEqual(finished[-1]['image'], f'/api/jobs/{self.job_id}/image')
 
+    def test_http_reference_request_arrives_in_multiple_network_reads(self):
+        raw = json.dumps({'scene': 'boat', 'reference': 'data:image/png;base64,' + 'A'*150000}).encode()
+        connection = socket.create_connection(('127.0.0.1', self.server.server_port), timeout=3)
+        self.connections.append(connection)
+        headers = (f'POST /api/preview HTTP/1.1\r\nHost: {self.host}\r\n'
+                   f'Authorization: {self.authorization}\r\nContent-Length: {len(raw)}\r\n'
+                   'Content-Type: application/json\r\nConnection: close\r\n\r\n').encode()
+        connection.sendall(headers + raw[:184])
+        time.sleep(.05)
+        connection.sendall(raw[184:65000])
+        time.sleep(.05)
+        connection.sendall(raw[65000:])
+        response = b''
+        while chunk := connection.recv(65536):
+            response += chunk
+        self.assertIn(b'200 OK', response.split(b'\r\n', 1)[0])
+        self.assertIn('boat', json.loads(response.split(b'\r\n\r\n', 1)[1])['prompt'])
+
     def test_stream_rejects_missing_auth_and_cross_origin(self):
         path = f'http://{self.host}/api/jobs/{self.job_id}/events'
         for headers, expected in [({}, 401), ({'Authorization': self.authorization,

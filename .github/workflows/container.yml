@@ -23,6 +23,7 @@ jobs:
       - run: python -m compileall -q app.py inference_worker.py download_models.py
       - run: bash -n setup-macos.sh runpod/entrypoint.sh
       - run: node --check static/app.js
+      - run: node --test tests/test_stream_client.cjs
   image:
     needs: test
     runs-on: ubuntu-latest
