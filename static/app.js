@@ -35,6 +35,7 @@ function payload() {
     reference: state.reference, source_history_id: state.sourceHistoryId, input_mode: $('inputMode').value,
     width: Number($('width').value), height: Number($('height').value),
     seed: Number($('seed').value), rewrite: $('rewrite').checked, steps: Number($('steps').value), cfg: Number($('cfg').value), vae_cpu: $('vaeCpu').checked, offload: $('offload').checked, live_preview: $('livePreview').checked, preview_interval: Number($('previewInterval').value),
+    lora_id: $('loraSelect').value, lora_strength: Number($('loraStrength').value),
     settings: state.settings };
 }
 async function api(path, body, method = null) {
@@ -280,6 +281,37 @@ function renderSettings() {
     const input = document.createElement('input'); input.id = 'model-' + key; input.value = state.settings[key] || state.defaults[key] || ''; input.autocomplete = 'off'; wrap.append(input); $('modelFields').append(wrap);
   }
 }
+async function loadLoras(selected = $('loraSelect').value) {
+  const result = await api('/api/loras');
+  const select = $('loraSelect'); select.replaceChildren(new Option('None', ''));
+  for (const item of result.items) select.add(new Option(item.name, item.id));
+  if (result.items.some(item => item.id === selected)) select.value = selected;
+}
+async function uploadLora(file) {
+  if (!file) return;
+  if (!file.name.toLowerCase().endsWith('.safetensors') || file.size > 2 * 1024 ** 3) {
+    showError('Choose a .safetensors LoRA up to 2 GiB.'); return;
+  }
+  let id = null;
+  $('loraFile').disabled = true;
+  try {
+    showError('');
+    const upload = await api('/api/loras/uploads', {name: file.name, size: file.size}); id = upload.id;
+    for (let offset = 0; offset < file.size; offset += upload.chunk_size) {
+      const response = await fetch(`/api/loras/uploads/${id}/chunk`, {method: 'POST', headers: {'Content-Type':'application/octet-stream', 'X-Upload-Offset': String(offset)}, body: file.slice(offset, offset + upload.chunk_size)});
+      if (!response.ok) { const error = await response.json(); throw new Error(error.error || 'Upload failed.'); }
+      $('loraStatus').textContent = `Uploading ${file.name}: ${Math.round(Math.min(offset + upload.chunk_size, file.size) / file.size * 100)}%`;
+    }
+    $('loraStatus').textContent = 'Checking adapter file…';
+    await api(`/api/loras/uploads/${id}/finish`, {});
+    await loadLoras(id);
+    $('loraSelect').dispatchEvent(new Event('change', {bubbles:true}));
+    $('loraStatus').textContent = `${file.name} uploaded. Model compatibility is checked on generation.`;
+  } catch (error) {
+    showError(error.message); $('loraStatus').textContent = 'Upload failed. Select the file to retry.';
+    if (id) await api(`/api/loras/uploads/${id}`, undefined, 'DELETE').catch(() => {});
+  } finally { $('loraFile').disabled = false; $('loraFile').value = ''; }
+}
 function preserveConfig(backend) {
   const key = 'playground-form-' + backend;
   const controls = [...document.querySelectorAll('.editor input[id], .editor textarea[id], .editor select[id]')].filter(el => el.type !== 'file');
@@ -316,7 +348,9 @@ async function init() {
   }
   try { state.settings = JSON.parse(localStorage.getItem('qwen-image-2-1-abliterated-playground-model-paths') || '{}'); } catch { state.settings = {}; }
   renderSettings();
+  await loadLoras();
   preserveConfig(config.backend);
+  $('loraFile').onchange = e => uploadLora(e.target.files[0]);
   $('settingsButton').onclick = () => $('settingsDialog').showModal();
   $('settingsDialog').addEventListener('close', () => { if ($('settingsDialog').returnValue === 'save') { for (const key of Object.keys(modelLabels)) state.settings[key] = $('model-' + key).value.trim(); localStorage.setItem('qwen-image-2-1-abliterated-playground-model-paths', JSON.stringify(state.settings)); } });
   $('resetSettings').onclick = () => { state.settings = {}; localStorage.removeItem('qwen-image-2-1-abliterated-playground-model-paths'); renderSettings(); };

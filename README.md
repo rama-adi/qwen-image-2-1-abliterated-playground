@@ -98,6 +98,14 @@ Left-side settings stay unchanged when generating and are saved within the brows
 
 Use **Delete** beside a history image or **Delete all history** to remove saved renders, including their prompts, previews, and logs. Both ask for confirmation. Deletion is blocked while a render is active; model weights are never deleted.
 
+### Upload a LoRA
+
+Under **LoRA**, upload a standard Qwen Image 2.1 transformer `.safetensors` adapter (up to 2 GiB), select it, and set its strength. Start with the adapter author's recommendation; **None** or strength **0** disables it. Uploads use 8 MiB chunks and persist in the model directory's `loras/` folder (`/workspace/models/loras` on RunPod). No new environment variable is required; `PLAYGROUND_LORA_DIR` optionally overrides the folder.
+
+RunPod loads the adapter through Diffusers/PEFT and executes its weights in BF16. Mac passes it to stable-diffusion.cpp alongside the quantized base model. Adapter compatibility is checked by the selected engine on generation; a structurally valid upload does not establish model compatibility. Only one standard LoRA is active at a time; LoKr/other adapter formats are not supported. Same-adapter RunPod renders reuse the warm pipeline; changing the adapter or strength reloads it. Image metadata records the adapter name, SHA-256, and strength.
+
+The supplied Civitai workflow references `qwen-image-2.1-fix-1.0.safetensors` at strength **1**, with CFG **3**, **20 steps**, and connected seed **79**. Its APG, FreSca, and `seeds_2`/`sgm_uniform` sampler are not implemented here; importing its LoRA alone does not reproduce the full workflow. The workflow JSON does not contain the adapter weights. Our RunPod pipeline retains BF16 and the Heretic encoder instead of that workflow's INT8 models.
+
 ### Prompt rewriting and image editing
 
 Enable **Expand scene with Heretic** to run the unquantized PE-T2I rewriter before generation. Its pinned `system_prompt.txt` is loaded automatically. The original prompt is retained in `request.json`, the actual render prompt is saved in `metadata.json`, and the rewrite JSON is saved beside the image. Your chosen width/height override its suggested ratio. Invalid rewrite JSON fails the job visibly instead of silently changing the prompt.

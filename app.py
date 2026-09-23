@@ -19,6 +19,7 @@ import sys
 import threading
 import time
 import uuid
+from lora_store import Store as LoraStore, CHUNK_SIZE
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
@@ -28,6 +29,7 @@ STATIC = ROOT / "static"
 OUTPUTS = Path(os.environ.get("PLAYGROUND_OUTPUT_DIR", ROOT / "outputs"))
 MODEL_DIR = Path(os.environ.get("PLAYGROUND_MODEL_DIR", "models"))
 BACKEND = os.environ.get("PLAYGROUND_BACKEND", "sd-cpp")
+LORAS = LoraStore(os.environ.get("PLAYGROUND_LORA_DIR", str(MODEL_DIR / "loras")))
 PASSWORD = os.environ.get("PLAYGROUND_PASSWORD", "")
 DEFAULTS = {
     "sd_cli": os.environ.get("PLAYGROUND_SD_CLI", "stable-diffusion.cpp/build/bin/sd-cli"),
@@ -120,12 +122,13 @@ def make_command(data: dict, reference: Path | None, output: Path) -> list[str]:
     if seed == 0:
         seed = secrets.randbelow(2**32 - 1) + 1
     data["seed"] = seed
+    lora = LORAS.selection(data.get("lora_id"), data.get("lora_strength", 1))
     if BACKEND == "diffusers":
         if data.get("rewrite") and os.environ.get("PLAYGROUND_REWRITER", "0") != "1":
             raise ValueError("Prompt rewriting is disabled. Set PLAYGROUND_REWRITER=1 and restart the Pod.")
         if data.get("rewrite") and data.get("input_mode") == "edit":
             raise ValueError("Disable scene rewriting for image edits.")
-        request = {"prompt": assembled_prompt(data), "reference": str(reference) if reference else None,
+        request = {"lora": lora, "prompt": assembled_prompt(data), "reference": str(reference) if reference else None,
                    "output": str(output), "width": width, "height": height, "steps": steps,
                    "cfg": cfg, "seed": seed, "negative": str(data.get("negative", "")),
                    "offload": bool(data.get("offload", True)), "rewrite": bool(data.get("rewrite")),
@@ -160,7 +163,11 @@ def make_command(data: dict, reference: Path | None, output: Path) -> list[str]:
             cmd += ["--llm_vision", str(resolved["vision"])]
         cmd += ["-r", str(reference), "--ref-image-args",
                 "pass_to_vlm=true,pass_to_dit=true,vlm_resize_mode=longest_side,vlm_max_size=512"]
-    cmd += ["-p", assembled_prompt(data), "--seed", str(seed), "--cfg-scale", str(cfg), "--steps", str(steps),
+    prompt = assembled_prompt(data)
+    if lora and lora['strength'] != 0:
+        cmd += ["--lora-model-dir", str(LORAS.root.resolve())]
+        prompt += f" <lora:{lora['id']}:{lora['strength']}>"
+    cmd += ["-p", prompt, "--seed", str(seed), "--cfg-scale", str(cfg), "--steps", str(steps),
             "--sampling-method", "euler", "--diffusion-fa", "-W", str(width),
             "-H", str(height), "-o", str(output)]
     if data.get("live_preview", True):
@@ -559,6 +566,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.json_response(200, {"defaults": DEFAULTS, "active": ACTIVE,
                                             "vae_cpu_default": sys.platform == "darwin",
                                             "backend": BACKEND, "rewriter": BACKEND == "diffusers" and os.environ.get("PLAYGROUND_REWRITER", "0") == "1"})
+        if path == "/api/loras":
+            return self.json_response(200, {"items": LORAS.items()})
         if path == "/api/history":
             return self.json_response(200, {"items": history_records()})
         history_image = re.fullmatch(r"/api/history/([a-f0-9]{32})/image", path)
@@ -604,6 +613,10 @@ class Handler(BaseHTTPRequestHandler):
         if not self.authorized():
             return
         path = urlparse(self.path).path
+        upload = re.fullmatch(r"/api/loras/uploads/([a-f0-9]{32})", path)
+        if upload:
+            LORAS.cancel(upload.group(1))
+            return self.json_response(200, {"cancelled": True})
         match = re.fullmatch(r"/api/history(?:/([a-f0-9]{32}))?", path)
         if not match:
             return self.json_response(404, {"error": "Unknown endpoint."})
@@ -621,6 +634,23 @@ class Handler(BaseHTTPRequestHandler):
             return
         path = urlparse(self.path).path
         try:
+            if path == "/api/loras/uploads":
+                upload = self.read_json()
+                return self.json_response(201, LORAS.begin(upload.get('name'), upload.get('size')))
+            upload = re.fullmatch(r"/api/loras/uploads/([a-f0-9]{32})/(chunk|finish)", path)
+            if upload:
+                if upload.group(2) == 'finish':
+                    return self.json_response(200, LORAS.finish(upload.group(1)))
+                size = int(self.headers.get('Content-Length', '0'))
+                offset = int(self.headers.get('X-Upload-Offset', '-1'))
+                if not 0 < size <= CHUNK_SIZE:
+                    raise ValueError('Upload chunks must be at most 8 MiB.')
+                content = bytearray()
+                while len(content) < size:
+                    chunk = self.rfile.read(min(65536, size - len(content)))
+                    if not chunk: raise ValueError('Upload was interrupted.')
+                    content.extend(chunk)
+                return self.json_response(200, LORAS.append(upload.group(1), offset, content))
             data = self.read_json() if path in {"/api/preview", "/api/jobs"} else {}
             if path == "/api/preview":
                 return self.json_response(200, {"prompt": assembled_prompt(data)})
@@ -643,6 +673,7 @@ class Handler(BaseHTTPRequestHandler):
                                 "input_mode": str(data.get("input_mode", "style")),
                                 "source_history_id": str(data.get("source_history_id") or ""),
                                 "seed": int(data.get("seed", 42)), "backend": BACKEND, "rewrite": bool(data.get("rewrite")),
+                                "lora": LORAS.selection(data.get("lora_id"), data.get("lora_strength", 1)),
                                 "created_at": time.time()}
                     (directory / "metadata.json").write_text(json.dumps(metadata, indent=2))
                     job = {"id": job_id, "directory": str(directory), "output": str(output),
@@ -672,6 +703,8 @@ class Handler(BaseHTTPRequestHandler):
                     process.terminate()
                 return self.json_response(200, {"status": "cancelling"})
             self.json_response(404, {"error": "Unknown endpoint."})
+        except OSError as exc:
+            self.json_response(400, {"error": "File operation failed. Check storage space and retry the upload."})
         except (ValueError, json.JSONDecodeError) as exc:
             self.json_response(400, {"error": str(exc)})
 

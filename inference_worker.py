@@ -20,7 +20,9 @@ def release_pipeline():
 
 def get_pipeline(root, request):
     global PIPELINE, PIPELINE_KEY
-    key = (str(root), bool(request.get("offload", True)), bool(request.get("live_preview", True)), os.environ.get("PLAYGROUND_VAE_TILING", "0") == "1")
+    lora = request.get("lora")
+    adapter_key = (lora["id"], lora["strength"]) if lora and lora["strength"] != 0 else None
+    key = (adapter_key, str(root), bool(request.get("offload", True)), bool(request.get("live_preview", True)), os.environ.get("PLAYGROUND_VAE_TILING", "0") == "1")
     if PIPELINE is not None and PIPELINE_KEY == key:
         print("Reusing warm BF16 image pipeline", flush=True)
         return PIPELINE
@@ -155,6 +157,19 @@ def load_pipeline(root, request):
         torch_dtype=torch.bfloat16, local_files_only=True)
     for name in ("text_encoder", "transformer", "vae"):
         assert_bf16(getattr(pipe, name), name)
+    lora = request.get("lora")
+    if lora and lora["strength"] != 0:
+        print(f"Loading LoRA: {lora['name']} at strength {lora['strength']}", flush=True)
+        try:
+            pipe.load_lora_weights(lora["path"], adapter_name="uploaded", local_files_only=True, use_safetensors=True)
+            pipe.set_adapters(["uploaded"], adapter_weights=[lora["strength"]])
+            # Adapter files may be F16/F32; execution stays BF16 on RunPod.
+            for name, parameter in pipe.transformer.named_parameters():
+                if "lora_" in name:
+                    parameter.data = parameter.data.to(dtype=torch.bfloat16)
+            assert_bf16(pipe.transformer, "transformer with LoRA")
+        except Exception as exc:
+            raise RuntimeError("Could not load this LoRA. Use a standard Qwen Image 2.1 transformer LoRA compatible with Diffusers; older Qwen Image/Flux/SDXL adapters are not interchangeable. " + str(exc)) from exc
     tiled = os.environ.get("PLAYGROUND_VAE_TILING", "0") == "1"
     if tiled:
         pipe.vae.enable_tiling()

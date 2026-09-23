@@ -20,7 +20,7 @@ jobs:
           python-version: '3.12'
       - run: python -m pip install -r requirements-ui.txt
       - run: python -m unittest discover -s tests -v
-      - run: python -m compileall -q app.py inference_worker.py download_models.py
+      - run: python -m compileall -q app.py inference_worker.py download_models.py lora_store.py
       - run: bash -n setup-macos.sh runpod/entrypoint.sh
       - run: node --check static/app.js
       - run: node --test tests/test_stream_client.cjs
@@ -57,7 +57,7 @@ jobs:
           cache-to: type=gha,mode=max
       - name: Verify image imports and authenticated HTTP startup
         run: |
-          docker run --rm --entrypoint python playground:test -c 'from diffusers import QwenImage21Pipeline; from transformers import Qwen3VLForConditionalGeneration, AutoModelForImageTextToText; import torch, wsproto; assert torch.version.cuda; print(torch.__version__)'
+          docker run --rm --entrypoint python playground:test -c 'from diffusers import QwenImage21Pipeline; from transformers import Qwen3VLForConditionalGeneration, AutoModelForImageTextToText; import torch, wsproto, peft; assert torch.version.cuda; print(torch.__version__)'
           docker run -d --name playground -p 8765:8765 \
             -e PLAYGROUND_PASSWORD=ci-test-only \
             -e PLAYGROUND_DOWNLOAD_MODELS=0 -e PLAYGROUND_REQUIRE_CUDA=0 \
