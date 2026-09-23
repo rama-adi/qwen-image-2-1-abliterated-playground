@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>qwen-image-2-1-abliterated-playground — Qwen Image Studio</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="brand-mark">✦</span><div><strong>qwen-image-2-1-abliterated-playground</strong><small>Qwen Image Studio</small></div></div>
+    <div class="top-actions"><span class="local-pill"><i></i> Local workspace</span><button id="settingsButton" class="ghost">⚙ Model settings</button></div>
+  </header>
+  <main class="layout">
+    <section class="editor">
+      <div class="panel-head"><div><div class="eyebrow">CONTROLS</div><h1>Create image</h1></div><span class="model-chip">Qwen 2.1</span></div>
+
+      <div class="card section-card">
+        <div class="section-title"><span class="step">01</span><div><h2 id="sceneHeading">Scene</h2><p id="sceneHelp">The setting, action, composition, and overall idea.</p></div></div>
+        <textarea id="scene" rows="5" placeholder="A young witch in a cluttered potion shop, surrounded by glass bottles, herbs, and candles. Warm evening light enters through the window."></textarea>
+        <label class="field-label" for="negative">Avoid <span class="optional">optional</span></label>
+        <label class="checkbox" id="rewriteControl" hidden><input id="rewrite" type="checkbox"><span>Expand scene with Heretic <small>BF16 prompt rewriting before rendering; preserves your selected canvas size</small></span></label>
+        <input id="negative" placeholder="Blurry details, extra limbs, text...">
+      </div>
+
+      <div class="card section-card">
+        <div class="section-title"><span class="step">02</span><div><h2>Characters</h2><p>Separate descriptions help Qwen keep each person distinct.</p></div></div>
+        <div id="characters" class="characters"></div>
+        <button id="addCharacter" class="add-button" type="button">＋ Add character</button>
+      </div>
+
+      <div class="card section-card">
+        <div class="section-title"><span class="step">03</span><div><h2>Image input</h2><p>Use an image for its style or edit the image itself.</p></div></div>
+        <label class="field-label" for="inputMode">How to use the image</label>
+        <select id="inputMode" class="input-mode"><option value="style">Style reference</option><option value="edit">Edit / reprompt image</option></select>
+        <label id="dropzone" class="dropzone" for="referenceInput">
+          <input id="referenceInput" type="file" accept="image/png,image/jpeg,image/webp" hidden>
+          <span id="referencePlaceholder"><b>↑</b><strong>Drop an image here or browse</strong><small>PNG, JPG, or WebP · up to 16 MB</small></span>
+          <img id="referencePreview" alt="Input image preview" hidden>
+        </label>
+        <div class="reference-row"><span id="referenceName">No reference selected</span><button id="clearReference" class="text-button" type="button" hidden>Remove</button></div>
+        <p id="imageHint" class="hint">Qwen Image 2.1 needs the reference in both its vision and image paths. The style instruction reduces content copying, but cannot fully prevent it.</p>
+      </div>
+
+      <div class="card section-card compact">
+        <div class="section-title"><span class="step">04</span><div><h2>Render</h2><p>Start smaller, then increase resolution.</p></div></div>
+        <div class="settings-grid">
+          <label>Width<input id="width" type="number" min="256" max="2048" step="32" value="768"></label>
+          <label>Height<input id="height" type="number" min="256" max="2048" step="32" value="768"></label>
+          <label>Steps<input id="steps" type="number" min="1" max="100" value="30"></label>
+          <label>Seed<input id="seed" type="number" min="0" max="4294967295" value="42"></label>
+          <label>CFG<input id="cfg" type="number" min="0.1" max="20" step="0.1" value="6"></label>
+        </div>
+        <label class="checkbox"><input id="vaeCpu" type="checkbox" checked><span>Decode VAE on CPU <small>Useful on Apple Silicon; leave off on NVIDIA GPUs</small></span></label>
+        <label class="checkbox"><input id="offload" type="checkbox"><span>Keep model weights in RAM <small>Use if GPU memory runs low; little speed benefit here</small></span></label>
+        <label class="checkbox"><input id="livePreview" type="checkbox" checked><span>Live preview <small>Shows intermediate images while sampling; each preview adds VAE decode time</small></span></label>
+        <label class="preview-frequency">Preview every <select id="previewInterval"><option value="1">1 step</option><option value="2">2 steps</option><option value="4" selected>4 steps</option><option value="6">6 steps</option><option value="8">8 steps</option></select></label>
+      </div>
+      <details class="prompt-details"><summary>View assembled prompt</summary><pre id="promptPreview">Enter a scene to preview the prompt.</pre></details>
+      <div class="generate-row"><button id="generate" class="primary" type="button">✦ Generate image</button><span>One render at a time</span></div>
+    </section>
+    <aside class="result-panel">
+      <div class="result-header"><div><div class="eyebrow">OUTPUT</div><h2>Your image</h2></div><span id="statusBadge" class="status-badge">Ready</span></div>
+      <div id="canvas" class="canvas"><div id="emptyState" class="empty-state"><div class="orb">✦</div><strong>Nothing on the canvas yet</strong><p>Your generated image will appear here.</p></div><img id="outputImage" alt="Generated image" hidden><div id="previewBadge" class="preview-badge" hidden>Live preview</div></div>
+      <div id="resultActions" class="result-actions" hidden><a id="download" class="download" download="qwen-image-2-1-abliterated-playground.png">↓ Download PNG</a><button id="editResult" class="download" type="button">✎ Edit this image</button></div>
+      <div id="previewMeta" class="preview-meta" hidden></div>
+      <div id="error" class="error" hidden></div>
+      <div class="progress-heading"><strong>Generation log</strong><button id="cancel" class="text-button" type="button" hidden>Cancel render</button></div>
+      <pre id="log" class="log">Waiting for a render.</pre>
+    </aside>
+    <aside class="history-panel">
+      <div class="history-header"><div><div class="eyebrow">LIBRARY</div><h2>History <span id="historyCount">0</span></h2></div><button id="refreshHistory" class="icon-button" type="button" title="Refresh history" aria-label="Refresh history">↻</button></div>
+      <p class="history-intro">Your renders are saved locally.</p>
+      <div id="historyList" class="history-list"><div class="history-empty">Generated images will appear here.</div></div>
+    </aside>
+  </main>
+  <dialog id="settingsDialog"><form method="dialog" class="dialog-content"><div class="dialog-header"><div><div class="eyebrow">LOCAL FILES</div><h2>Model settings</h2></div><button class="icon-button" aria-label="Close">✕</button></div><p>Paths are relative to this project, or absolute paths on your computer.</p><div id="modelFields"></div><div class="dialog-actions"><button id="resetSettings" type="button" class="ghost">Reset defaults</button><button class="primary small" value="save">Save paths</button></div></form></dialog>
+  <script src="/app.js"></script>
+</body>
+</html>

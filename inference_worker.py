@@ -1,0 +1,132 @@
+"""One render per process: BF16 models, bounded GPU lifetime, no quantization."""
+import gc
+import json
+import os
+from pathlib import Path
+import sys
+
+
+def parse_rewrite(text):
+    if "</think>" in text:
+        text = text.split("</think>", 1)[1]
+    elif "<think>" in text:
+        raise ValueError("Rewriter exhausted its budget before producing an answer.")
+    decoder = json.JSONDecoder()
+    for index, char in enumerate(text):
+        if char != "{":
+            continue
+        try:
+            result, _ = decoder.raw_decode(text[index:])
+        except ValueError:
+            continue
+        if isinstance(result, dict) and isinstance(result.get("rewritten_prompt"), str) and result["rewritten_prompt"].strip():
+            return result
+    raise ValueError("Rewriter did not return valid rewritten_prompt JSON; original prompt was not silently replaced.")
+
+
+def assert_bf16(model, name):
+    import torch
+    if getattr(model, "is_quantized", False) or getattr(model.config, "quantization_config", None):
+        raise RuntimeError(f"{name} is quantized; this backend requires BF16 weights.")
+    bad = {str(p.dtype) for p in model.parameters() if p.is_floating_point() and p.dtype not in {torch.bfloat16, torch.float32}}
+    if bad:
+        raise RuntimeError(f"{name} contains reduced-precision or unsupported parameters: {sorted(bad)}")
+    print(f"Verified {name}: unquantized BF16 / architecture-required FP32 parameters", flush=True)
+
+
+def rewrite_prompt(prompt, root):
+    import torch
+    from transformers import AutoModelForImageTextToText, AutoProcessor, LogitsProcessor, LogitsProcessorList
+
+    class PresencePenalty(LogitsProcessor):
+        def __init__(self, prompt_length):
+            self.prompt_length = prompt_length
+
+        def __call__(self, ids, scores):
+            for row in range(ids.shape[0]):
+                tokens = ids[row, self.prompt_length:]
+                if tokens.numel():
+                    scores[row, tokens.unique()] -= 1.5
+            return scores
+
+    checkpoint = root / "rewriter"
+    system_prompt = (checkpoint / "system_prompt.txt").read_text()
+    processor = AutoProcessor.from_pretrained(checkpoint, local_files_only=True)
+    model = AutoModelForImageTextToText.from_pretrained(
+        checkpoint, dtype=torch.bfloat16, local_files_only=True).to("cuda").eval()
+    assert_bf16(model, "Heretic prompt rewriter")
+    messages = [
+        {"role": "system", "content": [{"type": "text", "text": system_prompt}]},
+        {"role": "user", "content": [{"type": "text", "text": prompt}]},
+    ]
+    inputs = processor.apply_chat_template(messages, add_generation_prompt=True,
+        tokenize=True, return_dict=True, return_tensors="pt", enable_thinking=True).to("cuda")
+    if "mm_token_type_ids" not in inputs and hasattr(processor, "create_mm_token_type_ids"):
+        inputs["mm_token_type_ids"] = processor.create_mm_token_type_ids(inputs["input_ids"])
+    length = inputs["input_ids"].shape[1]
+    with torch.inference_mode():
+        output = model.generate(**inputs, max_new_tokens=int(os.environ.get("PLAYGROUND_REWRITE_TOKENS", "6144")),
+            do_sample=True, temperature=1.0, top_p=0.95, top_k=20,
+            logits_processor=LogitsProcessorList([PresencePenalty(length)]),
+            pad_token_id=processor.tokenizer.eos_token_id)
+    result = parse_rewrite(processor.tokenizer.decode(output[0, length:], skip_special_tokens=True))
+    del inputs, output, model, processor
+    gc.collect()
+    torch.cuda.empty_cache()
+    return result
+
+
+def render(request):
+    import torch
+    from diffusers import QwenImage21Pipeline
+    from transformers import Qwen3VLForConditionalGeneration
+    from PIL import Image
+
+    if not torch.cuda.is_available() or not torch.cuda.is_bf16_supported():
+        raise RuntimeError("RunPod requires an NVIDIA GPU with native BF16 support (Ampere or newer).")
+    root = Path(os.environ.get("PLAYGROUND_MODEL_DIR", "/workspace/models"))
+    output = Path(request["output"])
+    prompt = request["prompt"]
+    seed = request["seed"]
+    torch.manual_seed(seed)
+    if request.get("rewrite"):
+        if request.get("input_mode") == "edit":
+            raise ValueError("BF16 PE-T2I rewrites new scenes only. Disable rewriting for image edits.")
+        print("Rewriting prompt with BF16 Heretic PE-T2I…", flush=True)
+        result = rewrite_prompt(prompt, root)
+        (output.parent / "rewrite.json").write_text(json.dumps(result, indent=2))
+        prompt = result["rewritten_prompt"]
+        # The user's chosen canvas wins over the rewriter's aspect-ratio suggestion.
+    metadata_path = output.parent / "metadata.json"
+    metadata = json.loads(metadata_path.read_text())
+    metadata.update(prompt=prompt, seed=seed, precision="bfloat16", backend="diffusers")
+    metadata_path.write_text(json.dumps(metadata, indent=2))
+
+    print("Loading BF16 Heretic encoder and official BF16 DiT / VAE…", flush=True)
+    encoder = Qwen3VLForConditionalGeneration.from_pretrained(
+        root / "encoder", dtype=torch.bfloat16, local_files_only=True)
+    pipe = QwenImage21Pipeline.from_pretrained(root / "pipeline", text_encoder=encoder,
+        torch_dtype=torch.bfloat16, local_files_only=True)
+    for name in ("text_encoder", "transformer", "vae"):
+        assert_bf16(getattr(pipe, name), name)
+    pipe.vae.enable_tiling()
+    if request.get("offload", True):
+        pipe.enable_model_cpu_offload()
+    else:
+        pipe.to("cuda")
+
+    def progress(_pipe, step, _timestep, tensors):
+        print(f"Sampling {step + 1}/{request['steps']}", flush=True)
+        return tensors
+
+    image = Image.open(request["reference"]).convert("RGBA") if request.get("reference") else None
+    result = pipe(prompt=prompt, image=image, negative_prompt=request.get("negative", ""),
+        true_cfg_scale=request["cfg"], width=request["width"], height=request["height"],
+        num_inference_steps=request["steps"], generator=torch.Generator("cuda").manual_seed(seed),
+        callback_on_step_end=progress, use_kv_cache=os.environ.get("PLAYGROUND_KV_CACHE", "1") == "1")
+    result.images[0].save(output)
+    print(f"Saved {output}; peak CUDA allocation: {torch.cuda.max_memory_allocated() / 2**30:.2f} GiB", flush=True)
+
+
+if __name__ == "__main__":
+    render(json.loads(Path(sys.argv[1]).read_text()))

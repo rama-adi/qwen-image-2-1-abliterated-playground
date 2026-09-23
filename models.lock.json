@@ -1,0 +1,14 @@
+{
+  "pipeline": {
+    "repo": "Qwen/Qwen-Image-2.1",
+    "revision": "790c92633540aa0cb11d9abf19eb46d861714758"
+  },
+  "encoder": {
+    "repo": "pottokao/Qwen-Image-2.1-Text-Encoder-Heretic",
+    "revision": "047e54342fc4bfcd2addd54049db9c90bb74731e"
+  },
+  "rewriter": {
+    "repo": "pottokao/Qwen-Image-2.1-PE-T2I-Heretic",
+    "revision": "96e92081f46cd0ca2ac9679432c5b8b02c12cfdb"
+  }
+}

@@ -1,0 +1,9 @@
+# torch 2.8.0 + CUDA 12.8 comes from the base image.
+torch==2.8.0
+torchvision==0.23.0
+transformers==5.17.0
+accelerate==1.15.0
+huggingface-hub==1.32.0
+safetensors==0.8.0
+Pillow==12.3.0
+diffusers @ git+https://github.com/huggingface/diffusers.git@0377f0c1b34e3ff313d41edad1bd79c2ed8bb5ec
