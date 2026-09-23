@@ -30,16 +30,18 @@
       </div>
 
       <div class="card section-card">
-        <div class="section-title"><span class="step">03</span><div><h2>Image input</h2><p>Use an image for its style or edit the image itself.</p></div></div>
+        <div class="section-title"><span class="step">03</span><div><h2>Image input</h2><p>Combine up to four references, each with its own role.</p></div></div>
         <label class="field-label" for="inputMode">How to use the image</label>
-        <select id="inputMode" class="input-mode"><option value="style">Style reference</option><option value="edit">Edit / reprompt image</option></select>
+        <select id="inputMode" class="input-mode"><option value="style">New image with references</option><option value="edit">Edit / reprompt image</option></select>
         <label id="dropzone" class="dropzone" for="referenceInput">
-          <input id="referenceInput" type="file" accept="image/png,image/jpeg,image/webp" hidden>
-          <span id="referencePlaceholder"><b>↑</b><strong>Drop an image here or browse</strong><small>PNG, JPG, or WebP · up to 16 MB</small></span>
+          <input id="referenceInput" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden>
+          <span id="referencePlaceholder"><b>↑</b><strong>Drop images here or browse</strong><small>PNG, JPG, or WebP · up to 16 MB</small></span>
           <img id="referencePreview" alt="Input image preview" hidden>
         </label>
         <label>Saved references<select id="referenceSelect"><option value="">None</option></select></label>
-        <div class="reference-row"><span id="referenceName">No reference selected</span><button id="clearReference" class="text-button" type="button" hidden>Remove</button></div>
+        <button id="addSavedReference" type="button" class="add-button">＋ Add selected reference</button>
+        <div id="referenceCards" class="reference-cards"></div>
+        <div class="reference-row"><span id="referenceName">No reference selected</span><button id="clearReference" class="text-button" type="button" hidden>Clear references</button></div>
         <p id="imageHint" class="hint">Qwen Image 2.1 needs the reference in both its vision and image paths. The style instruction reduces content copying, but cannot fully prevent it.</p>
       </div>
 

@@ -19,6 +19,7 @@ import sys
 import threading
 import time
 import uuid
+from reference_roles import selected_references, reference_instructions
 from lora_store import Store as LoraStore, CHUNK_SIZE
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
@@ -58,7 +59,8 @@ def assembled_prompt(data: dict) -> str:
     mode = str(data.get("input_mode", "style"))
     if mode not in {"style", "edit"}:
         raise ValueError("Image input mode must be style or edit.")
-    has_image = bool(data.get("reference") or data.get("source_history_id"))
+    refs = selected_references(data)
+    has_image = bool(refs or data.get("reference") or data.get("reference_id") or data.get("source_history_id"))
     if mode == "edit" and not has_image:
         raise ValueError("Choose an image to edit.")
     characters = data.get("characters", [])
@@ -86,17 +88,20 @@ def assembled_prompt(data: dict) -> str:
     if mode == "edit":
         parts.extend(["", "Preserve the original image's elements and composition unless the instructions above change them.",
                       "Keep unchanged details recognizable; do not add unrelated elements."])
-    elif has_image:
+    elif has_image and not refs:
         parts.extend([
             "", "Use the supplied reference image only as a visual style reference.",
             "Use its linework, brushwork, shading, palette, texture, and rendering technique.",
             "Do not copy its subject, characters, poses, composition, objects, background, camera angle, or text.",
             "Follow the scene and character descriptions above for the content of the new image.",
         ])
+    if refs:
+        parts.extend(["", reference_instructions(data)])
     return "\n".join(parts)
 
 
-def make_command(data: dict, reference: Path | None, output: Path) -> list[str]:
+def make_command(data: dict, reference: Path | list[Path] | None, output: Path) -> list[str]:
+    references = reference if isinstance(reference, list) else ([reference] if reference else [])
     settings = data.get("settings", {})
     if not isinstance(settings, dict):
         raise ValueError("Invalid model settings.")
@@ -129,7 +134,8 @@ def make_command(data: dict, reference: Path | None, output: Path) -> list[str]:
             raise ValueError("Prompt rewriting is disabled. Set PLAYGROUND_REWRITER=1 and restart the Pod.")
         if data.get("rewrite") and data.get("input_mode") == "edit":
             raise ValueError("Disable scene rewriting for image edits.")
-        request = {"lora": lora, "prompt": assembled_prompt(data), "reference": str(reference) if reference else None,
+        request = {"lora": lora, "prompt": assembled_prompt(data), "reference": str(references[0]) if references else None, "references": [str(path) for path in references],
+                   "reference_instructions": reference_instructions(data),
                    "output": str(output), "width": width, "height": height, "steps": steps,
                    "cfg": cfg, "seed": seed, "negative": str(data.get("negative", "")),
                    "offload": bool(data.get("offload", True)), "rewrite": bool(data.get("rewrite")),
@@ -162,7 +168,9 @@ def make_command(data: dict, reference: Path | None, output: Path) -> list[str]:
     if reference:
         if "vision" in resolved:
             cmd += ["--llm_vision", str(resolved["vision"])]
-        cmd += ["-r", str(reference), "--ref-image-args",
+        for path in references:
+            cmd += ["-r", str(path)]
+        cmd += ["--ref-image-args",
                 "pass_to_vlm=true,pass_to_dit=true,vlm_resize_mode=longest_side,vlm_max_size=512"]
     prompt = assembled_prompt(data)
     if lora and lora['strength'] != 0 and lora.get("format") == "comfy-dora":
@@ -205,7 +213,17 @@ def decode_reference(value: str, directory: Path) -> Path | None:
     return path
 
 
-def resolve_reference(data: dict, directory: Path) -> Path | None:
+def resolve_reference(data: dict, directory: Path) -> Path | list[Path] | None:
+    refs = selected_references(data)
+    if refs:
+        paths = []
+        for index, ref in enumerate(refs, 1):
+            source = reference_path(ref['id']) if ref['source'] == 'reference' else OUTPUTS / ref['id'] / 'image.png'
+            if not source.is_file() or source.is_symlink() or source.parent.is_symlink():
+                raise ValueError('Selected reference image was not found.')
+            target = directory / f'reference_{index:02d}{source.suffix}'
+            shutil.copyfile(source, target); paths.append(target)
+        return paths
     upload = str(data.get("reference") or "")
     history_id = str(data.get("source_history_id") or "")
     reference_id = str(data.get("reference_id") or "")
@@ -294,10 +312,10 @@ def history_records() -> list[dict]:
         settings = {key: metadata.get(key, request.get(key)) for key in (
             'scene', 'prompt', 'negative', 'characters', 'width', 'height', 'steps', 'cfg', 'seed',
             'backend', 'precision', 'offload', 'vae_cpu', 'vae_tiling', 'kv_cache', 'rewrite',
-            'live_preview', 'preview_interval', 'input_mode', 'source_history_id', 'reference_id', 'model_revisions')}
+            'live_preview', 'preview_interval', 'input_mode', 'source_history_id', 'reference_id', 'references', 'model_revisions')}
         lora = metadata.get('lora', request.get('lora'))
         settings['lora'] = {k: lora.get(k) for k in ('id', 'name', 'sha256', 'strength', 'format')} if lora else None
-        settings['has_reference'] = any((directory / ('reference.' + ext)).is_file() for ext in ('png', 'jpg', 'webp'))
+        settings['has_reference'] = bool(metadata.get('references')) or any((directory / ('reference.' + ext)).is_file() for ext in ('png', 'jpg', 'webp'))
         records.append({
             "settings": settings,
             "id": directory.name,
@@ -752,6 +770,7 @@ class Handler(BaseHTTPRequestHandler):
                                 "lora": LORAS.selection(data.get("lora_id"), data.get("lora_strength", 1)),
                                 "created_at": time.time()}
                     metadata.update({key: data.get(key) for key in ('negative', 'characters', 'reference_id')})
+                    metadata['references'] = selected_references(data)
                     metadata.update(cfg=float(data.get('cfg', 6)), offload=bool(data.get('offload', BACKEND == 'diffusers')),
                         vae_cpu=bool(data.get('vae_cpu', True)), live_preview=bool(data.get('live_preview', True)),
                         preview_interval=int(data.get('preview_interval', 1)),

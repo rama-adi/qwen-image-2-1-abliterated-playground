@@ -114,7 +114,7 @@ Enable **Expand scene with Heretic** to run the unquantized PE-T2I rewriter befo
 
 For **Edit / reprompt image**, use the original edit instruction with the BF16 Heretic image-pipeline encoder. The scene rewriter is disabled for editing: PE-T2I is not PE-I2I, and the linked PE-I2I GGUF is quantized. This project does not substitute that quantized model in the BF16 deployment. You can upload an image or select **Edit this image** in history.
 
-Style references are approximate: the reference reaches both the vision and diffusion paths, so its composition or subject can leak into the result. Character cards become one structured natural-language prompt; they are not independently conditioned character regions.
+Use up to **four ordered reference cards** on Mac or RunPod. Upload multiple files or add saved references, then choose **style, pose, character/identity, clothing, composition/camera, background, object/product, or lighting/palette** for each. Add a short instruction to target a person or detail; arrow buttons change image order. In edit mode, image 1 is the source to edit and the rest guide the changes. Roles and order are saved with the experiment settings. These are prompt instructions, not separate ControlNet constraints: pose/identity matching is approximate, and references can influence other aspects. More images increase encoding time and VRAM usage. Character cards become one structured natural-language prompt; they are not independently conditioned character regions.
 
 ### Check the deployed GPU
 

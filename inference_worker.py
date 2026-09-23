@@ -211,6 +211,8 @@ def render(request):
         result = rewrite_prompt(prompt, root)
         (output.parent / "rewrite.json").write_text(json.dumps(result, indent=2))
         prompt = result["rewritten_prompt"]
+        if request.get("reference_instructions"):
+            prompt += "\n\n" + request["reference_instructions"]
         # The user's chosen canvas wins over the rewriter's aspect-ratio suggestion.
     metadata_path = output.parent / "metadata.json"
     metadata = json.loads(metadata_path.read_text())
@@ -237,7 +239,12 @@ def render(request):
             emit_progress(stage="decoding", step=current)
         return tensors
 
-    image = Image.open(request["reference"]).convert("RGBA") if request.get("reference") else None
+    paths = request.get('references') or ([request['reference']] if request.get('reference') else [])
+    images = []
+    for path in paths:
+        with Image.open(path) as source:
+            images.append(source.convert('RGBA'))
+    image = images or None
     result = pipe(prompt=prompt, image=image, negative_prompt=request.get("negative", ""),
         true_cfg_scale=request["cfg"], width=request["width"], height=request["height"],
         num_inference_steps=request["steps"], generator=torch.Generator("cuda").manual_seed(seed),

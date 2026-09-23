@@ -37,3 +37,10 @@ dialog{width:min(560px,calc(100vw - 30px));border:1px solid #5a4b66;border-radiu
 .preview-meta h3, .preview-meta p {margin: 0 0 10px;}
 .preview-meta pre {white-space: pre-wrap; overflow-wrap: anywhere; max-height: 420px; overflow: auto; user-select: text;}
 .preview-meta details {margin-top: 14px;}
+
+.reference-cards {display: grid; gap: 12px; margin: 14px 0;}
+.reference-card {display: grid; grid-template-columns: 56px minmax(0,1fr); gap: 10px; border: 1px solid #393342; padding: 12px; border-radius: 12px;}
+.reference-card img {width: 56px; height: 56px; object-fit: cover; border-radius: 8px; grid-row: span 2;}
+.reference-card strong {overflow-wrap: anywhere; font-size: 13px;}
+.reference-card input, .reference-actions {grid-column: 1 / -1;}
+.reference-actions {display: flex; gap: 8px; align-items: center;}

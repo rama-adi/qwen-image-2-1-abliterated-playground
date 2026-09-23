@@ -1,5 +1,5 @@
 const $ = id => document.getElementById(id);
-const state = { socket: null, reconnect: null, handshake: null, failures: 0, defaults: {}, settings: {}, characters: [], reference: '', references: [], sourceHistoryId: '', job: null, timer: null, history: [], selectedHistoryId: null, previewStep: 0 };
+const state = { socket: null, reconnect: null, handshake: null, failures: 0, defaults: {}, settings: {}, characters: [], references: [], referenceCards: [], job: null, timer: null, history: [], selectedHistoryId: null, previewStep: 0 };
 const modelLabels = { sd_cli: 'sd-cli executable', diffusion: 'Qwen Image 2.1 diffusion model', encoder: 'Heretic text encoder', vision: 'Heretic vision projector GGUF', vae: 'Qwen Image 2.1 VAE' };
 
 function addCharacter(data = {}) {
@@ -32,7 +32,7 @@ function move(index, offset) {
 }
 function payload() {
   return { scene: $('scene').value, negative: $('negative').value, characters: state.characters,
-    reference: state.reference, reference_id: $('referenceSelect').value, source_history_id: state.sourceHistoryId, input_mode: $('inputMode').value,
+    references: state.referenceCards.map(({id, source, role, note}) => ({id, source, role, note})), input_mode: $('inputMode').value,
     width: Number($('width').value), height: Number($('height').value),
     seed: Number($('seed').value), rewrite: $('rewrite').checked, steps: Number($('steps').value), cfg: Number($('cfg').value), vae_cpu: $('vaeCpu').checked, offload: $('offload').checked, live_preview: $('livePreview').checked, preview_interval: Number($('previewInterval').value),
     lora_id: $('loraSelect').value, lora_strength: Number($('loraStrength').value),
@@ -90,8 +90,9 @@ function updateInputMode() {
   $('sceneHeading').textContent = editing ? 'Edit instruction' : 'Scene';
   $('sceneHelp').textContent = editing ? 'Describe what to change in the supplied image.' : 'The setting, action, composition, and overall idea.';
   $('imageHint').textContent = editing
-    ? 'Describe the changes above. Qwen uses the image as the starting content and tries to keep unspecified details.'
-    : 'Qwen Image 2.1 needs the reference in both its vision and image paths. The style instruction reduces content copying, but cannot fully prevent it.';
+    ? 'Image 1 is the source to edit. Additional images guide the changes by their assigned roles.'
+    : 'Roles guide the prompt; pose and identity matching are approximate. More images use more memory.';
+  renderReferenceCards();
   $('scene').placeholder = editing
     ? 'Change the flower petals to deep red, keep the stem, leaves, and background the same.'
     : 'A young witch in a cluttered potion shop, surrounded by glass bottles, herbs, and candles.';
@@ -99,23 +100,13 @@ function updateInputMode() {
   if (editing) $('rewrite').checked = false;
   previewPrompt();
 }
-function showInputImage(src, name) {
-  $('referencePreview').src = src;
-  $('referencePreview').hidden = false;
-  $('referencePlaceholder').hidden = true;
-  $('referenceName').textContent = name;
-  $('clearReference').hidden = false;
-}
 function editHistoryImage() {
   const id = state.selectedHistoryId;
   if (!id) return;
   const item = state.history.find(entry => entry.id === id);
-  $('referenceSelect').value = '';
-  state.sourceHistoryId = id;
-  state.reference = '';
-  $('referenceInput').value = '';
+  state.referenceCards = [{id, source:'history', role:'identity', note:'', name:'Image from history', image:`/api/history/${id}/image`}];
   $('inputMode').value = 'edit';
-  showInputImage(`/api/history/${id}/image`, 'Selected from history');
+  renderReferenceCards();
   if (item && item.width && item.height) {
     $('width').value = item.width;
     $('height').value = item.height;
@@ -137,7 +128,8 @@ async function deleteHistory(id = null) {
   if (!confirm(message)) return;
   try {
     const result = await api('/api/history' + (id ? '/' + id : ''), undefined, 'DELETE');
-    if (result.deleted.includes(state.sourceHistoryId)) $('clearReference').click();
+    state.referenceCards = state.referenceCards.filter(ref => !result.deleted.includes(ref.id));
+    renderReferenceCards(); saveReferenceCards();
     if (result.deleted.includes(state.selectedHistoryId)) {
       state.selectedHistoryId = null;
       $('outputImage').hidden = true;
@@ -280,12 +272,49 @@ async function loadReferences(selected = $('referenceSelect').value) {
   for (const item of result.items) select.add(new Option(item.name, item.id));
   if (result.items.some(item => item.id === selected)) select.value = selected;
 }
-function selectReference() {
-  const item = state.references.find(item => item.id === $('referenceSelect').value);
-  state.reference = ''; state.sourceHistoryId = ''; $('referenceInput').value = '';
-  if (item) showInputImage(item.image, item.name);
-  else { $('referencePreview').hidden = true; $('referencePlaceholder').hidden = false; $('referenceName').textContent = 'No reference selected'; $('clearReference').hidden = true; }
+const referenceRoles = {style:'Copy style', pose:'Copy pose', identity:'Character / identity', clothing:'Clothing / outfit', composition:'Composition / camera', background:'Background / environment', object:'Object / product', lighting:'Lighting / palette'};
+function saveReferenceCards() {
+  document.querySelector('.editor').dispatchEvent(new Event('change', {bubbles:true}));
   previewPrompt();
+}
+function renderReferenceCards() {
+  const host = $('referenceCards'); host.replaceChildren();
+  state.referenceCards.forEach((ref, index) => {
+    const card = document.createElement('div'); card.className = 'reference-card';
+    const image = document.createElement('img'); image.src = ref.image; image.alt = `Reference ${index+1}: ${ref.name}`;
+    const title = document.createElement('strong'); title.textContent = `Image ${index+1} · ${ref.name}`;
+    const role = document.createElement('select'); role.setAttribute('aria-label', `Role for image ${index+1}`);
+    for (const [value, label] of Object.entries(referenceRoles)) role.add(new Option(label,value));
+    role.value = ref.role;
+    if ($('inputMode').value === 'edit' && index === 0) { role.add(new Option('Source image to edit','base')); role.value = 'base'; role.disabled = true; }
+    role.onchange = () => { ref.role = role.value; saveReferenceCards(); };
+    const note = document.createElement('input'); note.placeholder = 'Optional: e.g. pose for the person on the left'; note.maxLength = 500;
+    note.setAttribute('aria-label', `Instruction for image ${index+1}`); note.value = ref.note;
+    note.oninput = () => { ref.note = note.value; saveReferenceCards(); };
+    const actions = document.createElement('div'); actions.className = 'reference-actions';
+    for (const [text, offset] of [['↑',-1],['↓',1]]) {
+      const button = document.createElement('button'); button.type='button'; button.className='mini-button'; button.textContent=text;
+      button.setAttribute('aria-label', `Move image ${index+1} ${offset<0?'up':'down'}`); button.disabled=index+offset<0 || index+offset>=state.referenceCards.length;
+      button.onclick=()=>{ const other=index+offset; [state.referenceCards[index],state.referenceCards[other]]=[state.referenceCards[other],state.referenceCards[index]]; renderReferenceCards(); saveReferenceCards(); }; actions.append(button);
+    }
+    const remove=document.createElement('button'); remove.type='button'; remove.className='text-button'; remove.textContent='Remove';
+    remove.onclick=()=>{state.referenceCards.splice(index,1); renderReferenceCards(); saveReferenceCards();}; actions.append(remove);
+    card.append(image,title,role,note,actions); host.append(card);
+  });
+  $('referenceName').textContent = `${state.referenceCards.length} / 4 references`;
+  $('clearReference').hidden = !state.referenceCards.length;
+  $('referencePreview').hidden = true; $('referencePlaceholder').hidden = false;
+}
+function addReference(item) {
+  if (!item) return;
+  if (state.referenceCards.length >= 4) { showError('Use at most 4 reference images.'); return; }
+  state.referenceCards.push({...item, source:'reference', role:'style', note:''});
+  renderReferenceCards(); saveReferenceCards();
+}
+async function referenceFiles(files) {
+  const selected = [...files];
+  if (selected.length + state.referenceCards.length > 4) { showError('Use at most 4 reference images.'); return; }
+  for (const file of selected) await referenceFile(file);
 }
 async function referenceFile(file) {
   if (!file) return;
@@ -297,7 +326,7 @@ async function referenceFile(file) {
       const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = () => reject(new Error('Could not read reference image.')); reader.readAsDataURL(file);
     });
     const saved = await api('/api/references', {name:file.name, reference});
-    await loadReferences(saved.id); selectReference();
+    await loadReferences(saved.id); addReference(saved);
     $('referenceSelect').dispatchEvent(new Event('change', {bubbles:true})); showError('');
   } catch(error) { showError(error.message); }
   finally { $('referenceInput').disabled = false; }
@@ -350,11 +379,12 @@ function preserveConfig(backend) {
         if (el.type === 'checkbox') el.checked = saved.fields[el.id]; else el.value = saved.fields[el.id];
       }
       state.characters = saved.characters || []; renderCharacters();
+      state.referenceCards = (saved.referenceCards || []).slice(0,4); renderReferenceCards();
     }
   } catch {}
   const save = () => {
     const fields = Object.fromEntries(controls.map(el => [el.id, el.type === 'checkbox' ? el.checked : el.value]));
-    try { sessionStorage.setItem(key, JSON.stringify({fields, characters: state.characters})); } catch {}
+    try { sessionStorage.setItem(key, JSON.stringify({fields, characters: state.characters, referenceCards:state.referenceCards})); } catch {}
   };
   document.querySelector('.editor').addEventListener('input', save);
   document.querySelector('.editor').addEventListener('change', save);
@@ -379,8 +409,8 @@ async function init() {
   await loadLoras();
   await loadReferences();
   preserveConfig(config.backend);
-  $('referenceSelect').onchange = selectReference;
-  if ($('referenceSelect').value) selectReference();
+  $('addSavedReference').onclick = () => addReference(state.references.find(item=>item.id===$('referenceSelect').value));
+  updateInputMode();
   $('loraFile').onchange = e => uploadLora(e.target.files[0]);
   $('settingsButton').onclick = () => $('settingsDialog').showModal();
   $('settingsDialog').addEventListener('close', () => { if ($('settingsDialog').returnValue === 'save') { for (const key of Object.keys(modelLabels)) state.settings[key] = $('model-' + key).value.trim(); localStorage.setItem('qwen-image-2-1-abliterated-playground-model-paths', JSON.stringify(state.settings)); } });
@@ -393,12 +423,12 @@ async function init() {
   $('refreshHistory').onclick = () => loadHistory().catch(error => showError(error.message));
   $('cancel').onclick = async () => { if (state.job) await api('/api/jobs/' + state.job + '/cancel', {}); };
   $('livePreview').onchange = () => { $('previewInterval').disabled = !$('livePreview').checked; };
-  $('referenceInput').onchange = e => referenceFile(e.target.files[0]);
-  $('clearReference').onclick = () => { $('referenceSelect').value = ''; $('referenceSelect').dispatchEvent(new Event('change', {bubbles:true})); state.reference = ''; state.sourceHistoryId = ''; $('referenceInput').value = ''; $('referencePreview').hidden = true; $('referencePlaceholder').hidden = false; $('referenceName').textContent = 'No reference selected'; $('clearReference').hidden = true; previewPrompt(); };
+  $('referenceInput').onchange = e => referenceFiles(e.target.files);
+  $('clearReference').onclick = () => { state.referenceCards=[]; $('referenceInput').value=''; renderReferenceCards(); saveReferenceCards(); };
   const dropzone = $('dropzone');
   dropzone.addEventListener('dragover', e => { e.preventDefault(); dropzone.style.borderColor = '#c7a2ff'; });
   dropzone.addEventListener('dragleave', () => dropzone.style.borderColor = '');
-  dropzone.addEventListener('drop', e => { e.preventDefault(); dropzone.style.borderColor = ''; referenceFile(e.dataTransfer.files[0]); });
+  dropzone.addEventListener('drop', e => { e.preventDefault(); dropzone.style.borderColor = ''; referenceFiles(e.dataTransfer.files); });
   $('scene').addEventListener('input', previewPrompt);
   await loadHistory();
   if (!config.active && state.history.length) selectHistory(state.history[0]);
