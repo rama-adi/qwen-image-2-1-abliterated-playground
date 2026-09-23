@@ -4,7 +4,7 @@ Generate and edit images in your browser with Qwen Image 2.1, a BF16 Heretic tex
 
 ## About
 
-Built on [qwen-image-2-1-abliterated-playground](https://github.com/rama-adi/qwen-image-2-1-abliterated-playground), this single-user playground combines the official Qwen Image 2.1 diffusion model and VAE with Heretic language components. RunPod uses unquantized BF16 weights throughout, with CPU offloading to manage GPU memory. The repository also provides a separate quantized GGUF / Metal setup for Mac. Generation progress streams through WebSockets to both the image area and generation log, with automatic reconnection and HTTP fallback.
+Built on [qwen-image-2-1-abliterated-playground](https://github.com/rama-adi/qwen-image-2-1-abliterated-playground), this single-user playground combines the official Qwen Image 2.1 diffusion model and VAE with Heretic language components. RunPod uses unquantized BF16 weights throughout, with CPU offloading to manage GPU memory. The repository also provides a separate quantized GGUF / Metal setup for Mac. WebSockets stream progress to the image area and log, with HTTP fallback.
 
 **Uncensored by design:** Heretic / abliterated behavior is intentional, and this application adds no content filter. This is an experimental tool that can generate explicit, sensitive, or offensive material. Exercise discretion. You are responsible for your prompts, generated content, and any use or sharing of the output.
 
@@ -22,7 +22,7 @@ Optional settings:
 - **`HF_TOKEN`** accepts a read token from [Hugging Face settings](https://huggingface.co/settings/tokens), added through RunPod Secrets. Public downloads work without it.
 - **`PLAYGROUND_KV_CACHE=0`** reduces inference cache memory if needed; the default is **`1`**.
 
-No RunPod API key, GitHub token, or Docker Hub token is needed. To generate a replacement password locally:
+No API or registry keys are needed. Generate a password locally:
 
 ```bash
 openssl rand -hex 24
