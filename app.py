@@ -409,13 +409,29 @@ def run_job(job_id: str, cmd: list[str]) -> None:
             job.pop("process", None)
 
 
+def websocket_origin_allowed(origin, host):
+    if not origin:
+        return True
+    parsed = urlparse(origin)
+    if parsed.scheme not in {"http", "https"} or parsed.path not in {"", "/"} or parsed.query or parsed.fragment:
+        return False
+    if parsed.netloc == host:
+        return True
+    # RunPod's reverse proxy may replace Host with its upstream address.
+    # Trust only an explicitly configured public origin or this Pod's exact URL.
+    allowed = os.environ.get("PLAYGROUND_PUBLIC_ORIGIN", "").rstrip("/")
+    pod_id = os.environ.get("RUNPOD_POD_ID", "")
+    runpod_origin = f"https://{pod_id}-{os.environ.get('PORT', '8765')}.proxy.runpod.net" if pod_id else ""
+    return origin.rstrip("/") in {value for value in (allowed, runpod_origin) if value}
+
+
 class Handler(BaseHTTPRequestHandler):
     rbufsize = 0
 
     def stream_job(self, job: dict) -> None:
         # Same-origin Basic authentication has already run before the upgrade.
         origin = self.headers.get("Origin")
-        if origin and urlparse(origin).netloc != self.headers.get("Host"):
+        if not websocket_origin_allowed(origin, self.headers.get("Host")):
             return self.json_response(403, {"error": "WebSocket origin does not match this host."})
         if self.headers.get("Upgrade", "").lower() != "websocket":
             return self.json_response(426, {"error": "WebSocket upgrade required."})

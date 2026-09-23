@@ -64,6 +64,7 @@ Set these under your **RunPod template/Pod → Environment Variables**. Use the 
 | --- | --- | --- |
 | `PLAYGROUND_PASSWORD` | **Required**; template default `password` | Browser username is `playground`. Change the shared default before exposing your Pod; generate a replacement with your password manager or `openssl rand -hex 24`. |
 | `HF_TOKEN` | Optional, unset | [Hugging Face → Settings → Access Tokens](https://huggingface.co/settings/tokens). Create a **read** token if anonymous downloads are throttled or access requirements change. Current public models normally need none. |
+| `PLAYGROUND_PUBLIC_ORIGIN` | Optional | Exact external origin for a custom reverse proxy, such as `https://images.example.com`. RunPod proxy URLs are recognized automatically using `RUNPOD_POD_ID`. |
 | `PLAYGROUND_KEEP_WARM` | `1` | Reuse the RunPod image pipeline between renders. Set `0` to release all model memory after every render. |
 | `PLAYGROUND_REWRITER` | `1` | Set `0` to skip the optional BF16 prompt-rewriter download and hide its checkbox. This is a setting you choose, not a credential. |
 | `PLAYGROUND_DOWNLOAD_MODELS` | `1` | Keep enabled. Set `0` only after the same pinned checkpoints are already present in `/workspace/models`. |

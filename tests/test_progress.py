@@ -45,13 +45,13 @@ class StreamingTests(unittest.TestCase):
         self.password.stop()
         self.directory.cleanup()
 
-    def connect(self):
+    def connect(self, origin=None):
         connection = socket.create_connection(('127.0.0.1', self.server.server_port), timeout=3)
         self.connections.append(connection)
         ws = WSConnection(ConnectionType.CLIENT)
         connection.sendall(ws.send(Request(host=self.host, target=f'/api/jobs/{self.job_id}/events',
             extra_headers=[(b'authorization', self.authorization.encode()),
-                           (b'origin', ('http://' + self.host).encode())])))
+                           (b'origin', (origin or 'http://' + self.host).encode())])))
         return connection, ws
 
     def messages_until(self, connection, ws, predicate):
@@ -83,6 +83,15 @@ class StreamingTests(unittest.TestCase):
         self.job['status'] = 'done'
         finished = self.messages_until(connection, ws, lambda message: message['status'] == 'done')
         self.assertEqual(finished[-1]['image'], f'/api/jobs/{self.job_id}/image')
+
+    def test_runpod_origin_through_rewritten_proxy_host(self):
+        with patch.dict(app.os.environ, {'RUNPOD_POD_ID': 'testpod', 'PORT': '8765'}):
+            connection, ws = self.connect('https://testpod-8765.proxy.runpod.net')
+            messages = self.messages_until(connection, ws, lambda message: message['status'] == 'running')
+            self.assertEqual(messages[-1]['id'], self.job_id)
+            self.assertFalse(app.websocket_origin_allowed('https://otherpod-8765.proxy.runpod.net', self.host))
+            self.assertFalse(app.websocket_origin_allowed('https://testpod-8765.proxy.runpod.net.evil.test', self.host))
+            self.assertFalse(app.websocket_origin_allowed('http://testpod-8765.proxy.runpod.net', self.host))
 
     def test_http_reference_request_arrives_in_multiple_network_reads(self):
         raw = json.dumps({'scene': 'boat', 'reference': 'data:image/png;base64,' + 'A'*150000}).encode()
