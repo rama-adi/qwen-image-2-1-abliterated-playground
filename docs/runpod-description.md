@@ -8,34 +8,25 @@ Built on [qwen-image-2-1-abliterated-playground](https://github.com/rama-adi/qwe
 
 **Uncensored by design:** Heretic / abliterated behavior is intentional, and this application adds no content filter. This is an experimental tool that can generate explicit, sensitive, or offensive material. Exercise discretion. You are responsible for your prompts, generated content, and any use or sharing of the output.
 
-## Setup
+## Deploy the template
 
-- GPU: NVIDIA with native BF16 support; **48 GB VRAM or more** recommended (RTX A6000, L40/L40S, A100 80 GB). Host driver must support **CUDA 12.8**.
-- Host RAM: **64 GB or more**.
-- Container disk: **30 GB**. Persistent volume: **120 GB**, mounted at `/workspace`.
-- Expose **HTTP port 8765**. Leave the container start command blank.
-- Container image:
+The container image, HTTP port, storage paths, and model settings are already configured.
 
-```text
-ghcr.io/rama-adi/qwen-image-2-1-abliterated-playground:latest
-```
+1. Select an NVIDIA GPU with native BF16 support and **48 GB VRAM or more** recommended: RTX A6000, L40/L40S, or A100 80 GB. Choose a host with **64 GB RAM or more** and a driver compatible with **CUDA 12.8**.
+2. In **Environment Variables**, change **`PLAYGROUND_PASSWORD`** from **`password`** to your own password. The login username is **`playground`**. Use RunPod's key icon / Secrets for your replacement password.
+3. Optionally adjust the settings below, then deploy. Keep the template's **30 GB container disk** and **120 GB persistent storage** allocation, or increase them. Use a network volume if you want to keep your models and outputs after deleting the Pod.
 
-Set these in the RunPod template's **Environment Variables**:
+Optional settings:
 
-```text
-PLAYGROUND_PASSWORD=password
-PLAYGROUND_REWRITER=1
-```
+- **`PLAYGROUND_REWRITER=1`** enables the BF16 Heretic scene rewriter. Set it to **`0`** to skip it and save download/storage space.
+- **`HF_TOKEN`** accepts a read token from [Hugging Face settings](https://huggingface.co/settings/tokens), added through RunPod Secrets. Public downloads work without it.
+- **`PLAYGROUND_KV_CACHE=0`** reduces inference cache memory if needed; the default is **`1`**.
 
-Default login: username **`playground`**, password **`password`**. Change the shared default before exposing your Pod; use RunPod's key icon / Secrets for your replacement password. Generate one with:
+No RunPod API key, GitHub token, or Docker Hub token is needed. To generate a replacement password locally:
 
 ```bash
 openssl rand -hex 24
 ```
-
-The password is a template setting; the container requires `PLAYGROUND_PASSWORD` to be set. Set `PLAYGROUND_REWRITER=0` to skip the optional scene rewriter.
-
-Optional: add `HF_TOKEN` as a RunPod Secret using a read token from [Hugging Face settings](https://huggingface.co/settings/tokens). Public downloads work without it. No RunPod API key, GitHub token, or Docker Hub token is needed inside the Pod.
 
 ## Use
 
