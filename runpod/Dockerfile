@@ -1,4 +1,4 @@
-FROM pytorch/pytorch:2.8.0-cuda12.8-cudnn9-runtime
+FROM pytorch/pytorch:2.8.0-cuda12.8-cudnn9-runtime AS application
 
 RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates tini && \
     rm -rf /var/lib/apt/lists/*
@@ -8,7 +8,7 @@ RUN python -m pip install --no-cache-dir -r /tmp/requirements.txt && \
 
 # All application files live outside the RunPod persistent volume mount.
 WORKDIR /app
-COPY lora_store.py app.py inference_worker.py download_models.py models.lock.json /app/
+COPY adapter_compat.py lora_store.py app.py inference_worker.py download_models.py models.lock.json /app/
 COPY static/ /app/static/
 COPY scripts/ /app/scripts/
 COPY runpod/entrypoint.sh /usr/local/bin/playground-entrypoint
@@ -26,3 +26,11 @@ EXPOSE 8765
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60m --retries=3 \
     CMD python -c 'import urllib.request; urllib.request.urlopen("http://127.0.0.1:8765/healthz", timeout=3)'
 ENTRYPOINT ["/usr/bin/tini", "-g", "--", "/usr/local/bin/playground-entrypoint"]
+
+# Tests run inside BuildKit. The final COPY forces validation before publication.
+FROM application AS validation
+COPY tests/smoke_http.py tests/test_adapter_compat.py tests/container_check.py /checks/
+RUN PYTHONPATH=/app python /checks/container_check.py
+
+FROM application AS final
+COPY --from=validation /tmp/playground-validated /app/.build-validated

@@ -1,4 +1,5 @@
 """Reusable BF16 render worker. Cancellation/errors terminate its CUDA context."""
+from adapter_compat import load_adapter
 import gc
 import json
 import os
@@ -161,7 +162,7 @@ def load_pipeline(root, request):
     if lora and lora["strength"] != 0:
         print(f"Loading LoRA: {lora['name']} at strength {lora['strength']}", flush=True)
         try:
-            pipe.load_lora_weights(lora["path"], adapter_name="uploaded", local_files_only=True, use_safetensors=True)
+            load_adapter(pipe, lora["path"])
             pipe.set_adapters(["uploaded"], adapter_weights=[lora["strength"]])
             # Adapter files may be F16/F32; execution stays BF16 on RunPod.
             for name, parameter in pipe.transformer.named_parameters():

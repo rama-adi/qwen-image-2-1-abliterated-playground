@@ -1,5 +1,5 @@
 const $ = id => document.getElementById(id);
-const state = { socket: null, reconnect: null, handshake: null, failures: 0, defaults: {}, settings: {}, characters: [], reference: '', sourceHistoryId: '', job: null, timer: null, history: [], selectedHistoryId: null, previewStep: 0 };
+const state = { socket: null, reconnect: null, handshake: null, failures: 0, defaults: {}, settings: {}, characters: [], reference: '', references: [], sourceHistoryId: '', job: null, timer: null, history: [], selectedHistoryId: null, previewStep: 0 };
 const modelLabels = { sd_cli: 'sd-cli executable', diffusion: 'Qwen Image 2.1 diffusion model', encoder: 'Heretic text encoder', vision: 'Heretic vision projector GGUF', vae: 'Qwen Image 2.1 VAE' };
 
 function addCharacter(data = {}) {
@@ -32,7 +32,7 @@ function move(index, offset) {
 }
 function payload() {
   return { scene: $('scene').value, negative: $('negative').value, characters: state.characters,
-    reference: state.reference, source_history_id: state.sourceHistoryId, input_mode: $('inputMode').value,
+    reference: state.reference, reference_id: $('referenceSelect').value, source_history_id: state.sourceHistoryId, input_mode: $('inputMode').value,
     width: Number($('width').value), height: Number($('height').value),
     seed: Number($('seed').value), rewrite: $('rewrite').checked, steps: Number($('steps').value), cfg: Number($('cfg').value), vae_cpu: $('vaeCpu').checked, offload: $('offload').checked, live_preview: $('livePreview').checked, preview_interval: Number($('previewInterval').value),
     lora_id: $('loraSelect').value, lora_strength: Number($('loraStrength').value),
@@ -64,17 +64,24 @@ function showImage(url, item = null) {
   const meta = $('previewMeta');
   meta.replaceChildren();
   if (item) {
-    const title = document.createElement('strong');
-    title.textContent = item.scene;
-    const detail = document.createElement('span');
-    detail.textContent = [item.input_mode === 'edit' ? 'Edited image' : '', item.width && item.height ? `${item.width} × ${item.height}` : '', item.steps ? `${item.steps} steps` : '', item.seed !== undefined ? `Seed ${item.seed}` : ''].filter(Boolean).join(' · ');
-    meta.append(title, detail);
-    if (item.prompt) {
-      const details = document.createElement('details');
-      const summary = document.createElement('summary'); summary.textContent = 'View prompt';
-      const prompt = document.createElement('pre'); prompt.textContent = item.prompt;
-      details.append(summary, prompt); meta.append(details);
-    }
+    const title = document.createElement('h3'); title.textContent = 'Experiment settings';
+    const description = document.createElement('p'); description.textContent = item.scene;
+    const copy = document.createElement('button'); copy.type = 'button'; copy.className = 'secondary'; copy.textContent = 'Copy all settings';
+    const settings = item.settings || {scene:item.scene, prompt:item.prompt, width:item.width, height:item.height, steps:item.steps, seed:item.seed};
+    const text = JSON.stringify(settings, null, 2);
+    const details = document.createElement('details');
+    const summary = document.createElement('summary'); summary.textContent = `${item.width || '?'} × ${item.height || '?'} · ${item.steps || '?'} steps · CFG ${settings.cfg ?? '?'} · Seed ${item.seed ?? '?'}`;
+    const values = document.createElement('pre'); values.textContent = text;
+    copy.onclick = async () => {
+      try { await navigator.clipboard.writeText(text); copy.textContent = 'Copied!'; }
+      catch {
+        details.open = true;
+        const range = document.createRange(); range.selectNodeContents(values);
+        const selection = window.getSelection(); selection.removeAllRanges(); selection.addRange(range);
+        copy.textContent = 'Settings selected — copy with Ctrl/Cmd+C';
+      }
+    };
+    details.append(summary, values); meta.append(title, description, copy, details);
     meta.hidden = false;
   } else meta.hidden = true;
 }
@@ -103,6 +110,7 @@ function editHistoryImage() {
   const id = state.selectedHistoryId;
   if (!id) return;
   const item = state.history.find(entry => entry.id === id);
+  $('referenceSelect').value = '';
   state.sourceHistoryId = id;
   state.reference = '';
   $('referenceInput').value = '';
@@ -266,13 +274,33 @@ async function generate() {
     state.failures = 0; streamProgress();
   } catch (error) { showError(error.message); }
 }
+async function loadReferences(selected = $('referenceSelect').value) {
+  const result = await api('/api/references'); state.references = result.items;
+  const select = $('referenceSelect'); select.replaceChildren(new Option('None', ''));
+  for (const item of result.items) select.add(new Option(item.name, item.id));
+  if (result.items.some(item => item.id === selected)) select.value = selected;
+}
+function selectReference() {
+  const item = state.references.find(item => item.id === $('referenceSelect').value);
+  state.reference = ''; state.sourceHistoryId = ''; $('referenceInput').value = '';
+  if (item) showInputImage(item.image, item.name);
+  else { $('referencePreview').hidden = true; $('referencePlaceholder').hidden = false; $('referenceName').textContent = 'No reference selected'; $('clearReference').hidden = true; }
+  previewPrompt();
+}
 async function referenceFile(file) {
   if (!file) return;
   if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) { showError('Choose a PNG, JPG, or WebP image.'); return; }
   if (file.size > 16 * 1024 * 1024) { showError('Reference image exceeds 16 MB.'); return; }
-  const reader = new FileReader();
-  reader.onload = () => { state.reference = String(reader.result); state.sourceHistoryId = ''; showInputImage(state.reference, file.name); previewPrompt(); showError(''); };
-  reader.readAsDataURL(file);
+  $('referenceInput').disabled = true;
+  try {
+    const reference = await new Promise((resolve, reject) => {
+      const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = () => reject(new Error('Could not read reference image.')); reader.readAsDataURL(file);
+    });
+    const saved = await api('/api/references', {name:file.name, reference});
+    await loadReferences(saved.id); selectReference();
+    $('referenceSelect').dispatchEvent(new Event('change', {bubbles:true})); showError('');
+  } catch(error) { showError(error.message); }
+  finally { $('referenceInput').disabled = false; }
 }
 function renderSettings() {
   $('modelFields').innerHTML = '';
@@ -349,7 +377,10 @@ async function init() {
   try { state.settings = JSON.parse(localStorage.getItem('qwen-image-2-1-abliterated-playground-model-paths') || '{}'); } catch { state.settings = {}; }
   renderSettings();
   await loadLoras();
+  await loadReferences();
   preserveConfig(config.backend);
+  $('referenceSelect').onchange = selectReference;
+  if ($('referenceSelect').value) selectReference();
   $('loraFile').onchange = e => uploadLora(e.target.files[0]);
   $('settingsButton').onclick = () => $('settingsDialog').showModal();
   $('settingsDialog').addEventListener('close', () => { if ($('settingsDialog').returnValue === 'save') { for (const key of Object.keys(modelLabels)) state.settings[key] = $('model-' + key).value.trim(); localStorage.setItem('qwen-image-2-1-abliterated-playground-model-paths', JSON.stringify(state.settings)); } });
@@ -363,7 +394,7 @@ async function init() {
   $('cancel').onclick = async () => { if (state.job) await api('/api/jobs/' + state.job + '/cancel', {}); };
   $('livePreview').onchange = () => { $('previewInterval').disabled = !$('livePreview').checked; };
   $('referenceInput').onchange = e => referenceFile(e.target.files[0]);
-  $('clearReference').onclick = () => { state.reference = ''; state.sourceHistoryId = ''; $('referenceInput').value = ''; $('referencePreview').hidden = true; $('referencePlaceholder').hidden = false; $('referenceName').textContent = 'No reference selected'; $('clearReference').hidden = true; previewPrompt(); };
+  $('clearReference').onclick = () => { $('referenceSelect').value = ''; $('referenceSelect').dispatchEvent(new Event('change', {bubbles:true})); state.reference = ''; state.sourceHistoryId = ''; $('referenceInput').value = ''; $('referencePreview').hidden = true; $('referencePlaceholder').hidden = false; $('referenceName').textContent = 'No reference selected'; $('clearReference').hidden = true; previewPrompt(); };
   const dropzone = $('dropzone');
   dropzone.addEventListener('dragover', e => { e.preventDefault(); dropzone.style.borderColor = '#c7a2ff'; });
   dropzone.addEventListener('dragleave', () => dropzone.style.borderColor = '');

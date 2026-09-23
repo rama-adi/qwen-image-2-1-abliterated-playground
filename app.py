@@ -27,6 +27,7 @@ from urllib.parse import urlparse
 ROOT = Path(__file__).resolve().parent
 STATIC = ROOT / "static"
 OUTPUTS = Path(os.environ.get("PLAYGROUND_OUTPUT_DIR", ROOT / "outputs"))
+REFERENCES = OUTPUTS / "references"
 MODEL_DIR = Path(os.environ.get("PLAYGROUND_MODEL_DIR", "models"))
 BACKEND = os.environ.get("PLAYGROUND_BACKEND", "sd-cpp")
 LORAS = LoraStore(os.environ.get("PLAYGROUND_LORA_DIR", str(MODEL_DIR / "loras")))
@@ -164,6 +165,8 @@ def make_command(data: dict, reference: Path | None, output: Path) -> list[str]:
         cmd += ["-r", str(reference), "--ref-image-args",
                 "pass_to_vlm=true,pass_to_dit=true,vlm_resize_mode=longest_side,vlm_max_size=512"]
     prompt = assembled_prompt(data)
+    if lora and lora['strength'] != 0 and lora.get("format") == "comfy-dora":
+        raise ValueError("This ComfyUI DoRA adapter requires the RunPod backend; the Mac engine does not support its magnitude tensors.")
     if lora and lora['strength'] != 0:
         cmd += ["--lora-model-dir", str(LORAS.root.resolve())]
         prompt += f" <lora:{lora['id']}:{lora['strength']}>"
@@ -205,8 +208,14 @@ def decode_reference(value: str, directory: Path) -> Path | None:
 def resolve_reference(data: dict, directory: Path) -> Path | None:
     upload = str(data.get("reference") or "")
     history_id = str(data.get("source_history_id") or "")
-    if upload and history_id:
+    reference_id = str(data.get("reference_id") or "")
+    if sum(bool(value) for value in (upload, history_id, reference_id)) > 1:
         raise ValueError("Choose an uploaded image or a history image, not both.")
+    if reference_id:
+        source = reference_path(reference_id)
+        target = directory / source.name
+        shutil.copyfile(source, target)
+        return target
     if history_id:
         if not re.fullmatch(r"[a-f0-9]{32}", history_id):
             raise ValueError("Invalid history image ID.")
@@ -217,6 +226,49 @@ def resolve_reference(data: dict, directory: Path) -> Path | None:
         shutil.copyfile(source, target)
         return target
     return decode_reference(upload, directory)
+
+
+def reference_path(id):
+    if not re.fullmatch(r"[a-f0-9]{32}", id):
+        raise ValueError("Invalid reference ID.")
+    for root in (REFERENCES, OUTPUTS):
+        directory = root / id
+        if directory.is_symlink(): continue
+        for suffix in ('png', 'jpg', 'webp'):
+            file = directory / ('reference.' + suffix)
+            if file.is_file() and not file.is_symlink(): return file
+    raise ValueError("Saved reference was not found.")
+
+
+def reference_records():
+    result = {}
+    for root in (OUTPUTS, REFERENCES):
+        if not root.exists(): continue
+        for directory in root.iterdir():
+            if not re.fullmatch(r'[a-f0-9]{32}', directory.name): continue
+            try:
+                file = reference_path(directory.name)
+                info = directory / 'reference.json'
+                name = json.loads(info.read_text()).get('name') if info.is_file() else None
+                result[directory.name] = {'id': directory.name, 'name': name or ('Earlier reference ' + directory.name[:8]),
+                    'image': f'/api/references/{directory.name}/image', 'created_at': file.stat().st_mtime}
+            except (OSError, ValueError): continue
+    return sorted(result.values(), key=lambda item: item['created_at'], reverse=True)
+
+
+def save_reference(data):
+    id = uuid.uuid4().hex
+    directory = REFERENCES / id
+    directory.mkdir(parents=True)
+    try:
+        file = decode_reference(str(data.get('reference') or ''), directory)
+        if file is None: raise ValueError('Choose a reference image.')
+        name = str(data.get('name') or 'Uploaded reference')[:200]
+        (directory / 'reference.json').write_text(json.dumps({'name': name}))
+        return {'id': id, 'name': name, 'image': f'/api/references/{id}/image'}
+    except Exception:
+        shutil.rmtree(directory)
+        raise
 
 
 def history_records() -> list[dict]:
@@ -234,7 +286,20 @@ def history_records() -> list[dict]:
             metadata = json.loads(metadata_file.read_text()) if metadata_file.is_file() else {}
         except (OSError, ValueError):
             metadata = {}
+        # Recover settings from older RunPod requests; omit paths and image payloads.
+        request = {}
+        try:
+            request = json.loads((directory / 'request.json').read_text())
+        except (OSError, ValueError): pass
+        settings = {key: metadata.get(key, request.get(key)) for key in (
+            'scene', 'prompt', 'negative', 'characters', 'width', 'height', 'steps', 'cfg', 'seed',
+            'backend', 'precision', 'offload', 'vae_cpu', 'vae_tiling', 'kv_cache', 'rewrite',
+            'live_preview', 'preview_interval', 'input_mode', 'source_history_id', 'reference_id', 'model_revisions')}
+        lora = metadata.get('lora', request.get('lora'))
+        settings['lora'] = {k: lora.get(k) for k in ('id', 'name', 'sha256', 'strength', 'format')} if lora else None
+        settings['has_reference'] = any((directory / ('reference.' + ext)).is_file() for ext in ('png', 'jpg', 'webp'))
         records.append({
+            "settings": settings,
             "id": directory.name,
             "scene": metadata.get("scene") or "Earlier render",
             "prompt": metadata.get("prompt") or "",
@@ -566,6 +631,15 @@ class Handler(BaseHTTPRequestHandler):
             return self.json_response(200, {"defaults": DEFAULTS, "active": ACTIVE,
                                             "vae_cpu_default": sys.platform == "darwin",
                                             "backend": BACKEND, "rewriter": BACKEND == "diffusers" and os.environ.get("PLAYGROUND_REWRITER", "0") == "1"})
+        if path == "/api/references":
+            return self.json_response(200, {"items": reference_records()})
+        reference_match = re.fullmatch(r"/api/references/([a-f0-9]{32})/image", path)
+        if reference_match:
+            try:
+                file = reference_path(reference_match.group(1))
+                return self.send_file(file, mimetypes.guess_type(file.name)[0] or "application/octet-stream")
+            except ValueError:
+                return self.json_response(404, {"error": "Reference not found."})
         if path == "/api/loras":
             return self.json_response(200, {"items": LORAS.items()})
         if path == "/api/history":
@@ -634,6 +708,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         path = urlparse(self.path).path
         try:
+            if path == "/api/references":
+                return self.json_response(201, save_reference(self.read_json()))
             if path == "/api/loras/uploads":
                 upload = self.read_json()
                 return self.json_response(201, LORAS.begin(upload.get('name'), upload.get('size')))
@@ -675,6 +751,11 @@ class Handler(BaseHTTPRequestHandler):
                                 "seed": int(data.get("seed", 42)), "backend": BACKEND, "rewrite": bool(data.get("rewrite")),
                                 "lora": LORAS.selection(data.get("lora_id"), data.get("lora_strength", 1)),
                                 "created_at": time.time()}
+                    metadata.update({key: data.get(key) for key in ('negative', 'characters', 'reference_id')})
+                    metadata.update(cfg=float(data.get('cfg', 6)), offload=bool(data.get('offload', BACKEND == 'diffusers')),
+                        vae_cpu=bool(data.get('vae_cpu', True)), live_preview=bool(data.get('live_preview', True)),
+                        preview_interval=int(data.get('preview_interval', 1)),
+                        kv_cache=os.environ.get('PLAYGROUND_KV_CACHE', '1') == '1')
                     (directory / "metadata.json").write_text(json.dumps(metadata, indent=2))
                     job = {"id": job_id, "directory": str(directory), "output": str(output),
                            "steps": int(data.get("steps", 30)),

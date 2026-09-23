@@ -39,8 +39,8 @@ def validate_file(path):
         raise ValueError('This file does not contain LoRA tensors. Upload a Qwen Image 2.1 LoRA, not a base model.')
     intervals = []
     for name, tensor in tensors.items():
-        if not ('lora' in name.lower() or name.endswith('.alpha')) or not isinstance(tensor, dict):
-            raise ValueError('Unsupported adapter: expected standard LoRA tensors only.')
+        if not ('lora' in name.lower() or name.endswith(('.alpha', '.dora_scale'))) or not isinstance(tensor, dict):
+            raise ValueError(f'Unsupported adapter tensor: {name}. Expected LoRA or DoRA weights.')
         dtype = tensor.get('dtype')
         shape = tensor.get('shape')
         offsets = tensor.get('data_offsets')
@@ -59,6 +59,7 @@ def validate_file(path):
         cursor = end
     if cursor != total - 8 - length:
         raise ValueError('Truncated or invalid safetensors data.')
+    return 'comfy-dora' if any(k.endswith('.dora_scale') for k in tensors) else 'lora'
 
 
 class Store:
@@ -97,7 +98,7 @@ class Store:
             path = self.root / (id + '.part')
             if path.stat().st_size != info['size']:
                 raise ValueError('Upload is incomplete.')
-            validate_file(path)
+            info['format'] = validate_file(path)
             digest = hashlib.sha256()
             with path.open('rb') as stream:
                 while chunk := stream.read(CHUNK_SIZE): digest.update(chunk)

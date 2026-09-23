@@ -51,6 +51,14 @@ class LoraTests(unittest.TestCase):
         for strength in ('nan', 'inf', -1, 3):
             with self.assertRaises(ValueError): self.store.selection(id, strength)
 
+    def test_dora_magnitude_header_is_accepted(self):
+        header = json.dumps({
+            'diffusion_model.test.lora_A.weight': {'dtype':'BF16', 'shape':[1,2], 'data_offsets':[0,4]},
+            'diffusion_model.test.dora_scale': {'dtype':'BF16', 'shape':[2,1], 'data_offsets':[4,8]},
+        }).encode()
+        info = self.upload(struct.pack('<Q', len(header))+header+b'\0'*8)
+        self.assertEqual(info['format'], 'comfy-dora')
+
     def test_invalid_files_and_paths_rejected(self):
         for name, size in [('../fix.safetensors', 100), ('file.pkl', 100), ('fix.safetensors', MAX_SIZE+1)]:
             with self.assertRaises(ValueError): self.store.begin(name, size)
@@ -101,12 +109,12 @@ class LoraTests(unittest.TestCase):
         diffusers.QwenImage21Pipeline.from_pretrained.return_value = pipe
         transformers = SimpleNamespace(Qwen3VLForConditionalGeneration=MagicMock())
         request = {'offload': False, 'lora': {'path': '/models/fix.safetensors', 'name': 'fix', 'strength': 1}}
-        with patch.dict('sys.modules', {'torch': torch, 'diffusers': diffusers, 'transformers': transformers}), patch.object(worker, 'verify_checkpoint'), patch.object(worker, 'assert_bf16'):
+        with patch.dict('sys.modules', {'torch': torch, 'diffusers': diffusers, 'transformers': transformers}), patch.object(worker, 'verify_checkpoint'), patch.object(worker, 'assert_bf16'), patch.object(worker, 'load_adapter') as loader:
             worker.load_pipeline(Path('/models'), request)
-            pipe.load_lora_weights.assert_called_once_with('/models/fix.safetensors', adapter_name='uploaded', local_files_only=True, use_safetensors=True)
+            loader.assert_called_once_with(pipe, '/models/fix.safetensors')
             pipe.set_adapters.assert_called_once_with(['uploaded'], adapter_weights=[1])
             base.data.to.assert_not_called()
-            pipe.load_lora_weights.side_effect = ValueError('wrong shape')
+            loader.side_effect = ValueError('wrong shape')
             with self.assertRaisesRegex(RuntimeError, 'Could not load this LoRA'):
                 worker.load_pipeline(Path('/models'), request)
 

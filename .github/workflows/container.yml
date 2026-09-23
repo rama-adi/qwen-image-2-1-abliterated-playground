@@ -20,7 +20,7 @@ jobs:
           python-version: '3.12'
       - run: python -m pip install -r requirements-ui.txt
       - run: python -m unittest discover -s tests -v
-      - run: python -m compileall -q app.py inference_worker.py download_models.py lora_store.py
+      - run: python -m compileall -q app.py inference_worker.py download_models.py lora_store.py adapter_compat.py
       - run: bash -n setup-macos.sh runpod/entrypoint.sh
       - run: node --check static/app.js
       - run: node --test tests/test_stream_client.cjs
@@ -45,37 +45,22 @@ jobs:
             type=raw,value=latest,enable={{is_default_branch}}
             type=sha,format=long
             type=semver,pattern={{version}}
-      - name: Build image for testing
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
-        with:
-          context: .
-          file: runpod/Dockerfile
-          platforms: linux/amd64
-          load: true
-          tags: playground:test
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-      - name: Verify image imports and authenticated HTTP startup
-        run: |
-          docker run --rm --entrypoint python playground:test -c 'from diffusers import QwenImage21Pipeline; from transformers import Qwen3VLForConditionalGeneration, AutoModelForImageTextToText; import torch, wsproto, peft; assert torch.version.cuda; print(torch.__version__)'
-          docker run -d --name playground -p 8765:8765 \
-            -e PLAYGROUND_PASSWORD=ci-test-only \
-            -e PLAYGROUND_DOWNLOAD_MODELS=0 -e PLAYGROUND_REQUIRE_CUDA=0 \
-            -v playground-data:/workspace playground:test
-          trap 'docker logs playground; docker rm -f playground' EXIT
-          python tests/smoke_http.py
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         if: github.event_name != 'pull_request'
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Publish tested image
-        if: github.event_name != 'pull_request'
-        env:
-          TAGS: ${{ steps.meta.outputs.tags }}
-        run: |
-          while IFS= read -r tag; do
-            docker tag playground:test "$tag"
-            docker push "$tag"
-          done <<< "$TAGS"
+      - name: Build, validate, and publish image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: runpod/Dockerfile
+          platforms: linux/amd64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: |
+            type=registry,ref=ghcr.io/${{ github.repository }}:buildcache
+            type=gha
+          cache-to: ${{ github.event_name != 'pull_request' && format('type=registry,ref=ghcr.io/{0}:buildcache,mode=max', github.repository) || '' }}
