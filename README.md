@@ -4,6 +4,16 @@ A browser playground for Qwen Image 2.1 with a Heretic text encoder: scene and c
 
 **Mac runs quantized GGUF on Metal. RunPod runs unquantized BF16 with Diffusers.** The RunPod image has no Q4, INT8, FP8, or NVFP4 profile and does not fall back to quantization on low memory.
 
+## Quickstart on RunPod
+
+Launch [Qwen Image 2.1 Uncensored Quickstart](https://console.runpod.io/hub/template/qwxn5g8h1c?ref=60mw9z76) using the preconfigured template.
+
+1. Pick a compatible GPU; an **L40 48 GB** is a suggested starting point with CPU offloading enabled and **64 GB+ host RAM**.
+2. Change `PLAYGROUND_PASSWORD` from the template default `password`. The login username is `playground`. Adjust optional environment settings if needed.
+3. Deploy, wait for the first model download to finish, then open **Connect → HTTP port 8765** and sign in.
+
+The template already configures the container, port, and model settings. The manual setup below is for creating your own template.
+
 ## What runs where
 
 | Component | Mac | RunPod |
