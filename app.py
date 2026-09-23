@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import atexit
 import base64
 import binascii
 import hmac
@@ -10,6 +11,7 @@ import mimetypes
 import os
 from pathlib import Path
 import re
+import secrets
 import select
 import shutil
 import subprocess
@@ -37,6 +39,7 @@ DEFAULTS = {
 JOBS: dict[str, dict] = {}
 LOCK = threading.Lock()
 ACTIVE: str | None = None
+WARM_PROCESS = None
 MAX_BODY = 24 * 1024 * 1024
 
 
@@ -113,7 +116,10 @@ def make_command(data: dict, reference: Path | None, output: Path) -> list[str]:
         raise ValueError("CFG must be a number.") from None
     if not 0.1 <= cfg <= 20:
         raise ValueError("CFG must be between 0.1 and 20.")
-    seed = integer("seed", 0, 2**32 - 1, 42)
+    seed = integer("seed", 0, 2**32 - 1, 0)
+    if seed == 0:
+        seed = secrets.randbelow(2**32 - 1) + 1
+    data["seed"] = seed
     if BACKEND == "diffusers":
         if data.get("rewrite") and os.environ.get("PLAYGROUND_REWRITER", "0") != "1":
             raise ValueError("Prompt rewriting is disabled. Set PLAYGROUND_REWRITER=1 and restart the Pod.")
@@ -228,12 +234,31 @@ def history_records() -> list[dict]:
             "width": metadata.get("width"),
             "height": metadata.get("height"),
             "steps": metadata.get("steps"),
+            "seed": metadata.get("seed"),
             "input_mode": metadata.get("input_mode", "style"),
             "source_history_id": metadata.get("source_history_id"),
             "created_at": metadata.get("created_at") or image.stat().st_mtime,
             "image": f"/api/history/{directory.name}/image",
         })
     return sorted(records, key=lambda record: record["created_at"], reverse=True)[:50]
+
+
+def delete_history(history_id=None):
+    if history_id is not None and not re.fullmatch(r"[a-f0-9]{32}", history_id):
+        raise ValueError("Invalid history image ID.")
+    with LOCK:
+        if ACTIVE:
+            raise ValueError("Wait for the current render to finish or cancel it before deleting history.")
+        directories = [OUTPUTS / history_id] if history_id else list(OUTPUTS.glob("*"))
+        deleted = []
+        for directory in directories:
+            if (not re.fullmatch(r"[a-f0-9]{32}", directory.name) or directory.is_symlink()
+                    or not directory.is_dir() or not (directory / "image.png").is_file()):
+                continue
+            shutil.rmtree(directory)
+            JOBS.pop(directory.name, None)
+            deleted.append(directory.name)
+        return deleted
 
 
 def complete_png(path: Path) -> bool:
@@ -297,18 +322,50 @@ def job_snapshot(job: dict) -> dict:
             "image": f"/api/jobs/{job['id']}/image" if job["status"] == "done" else None}
 
 
+def stop_warm_worker():
+    global WARM_PROCESS
+    process, WARM_PROCESS = WARM_PROCESS, None
+    if process is not None:
+        if process.poll() is None:
+            process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+        for stream in (process.stdin, process.stdout):
+            if stream:
+                stream.close()
+
+
+atexit.register(stop_warm_worker)
+
+
 def run_job(job_id: str, cmd: list[str]) -> None:
-    global ACTIVE
+    global ACTIVE, WARM_PROCESS
     job = JOBS[job_id]
+    warm = (BACKEND == "diffusers" and os.environ.get("PLAYGROUND_KEEP_WARM", "1") == "1"
+            and len(cmd) > 3 and cmd[2] == str(ROOT / "inference_worker.py"))
     try:
         with (Path(job["directory"]) / "run.log").open("w", encoding="utf-8") as log:
-            process = subprocess.Popen(cmd, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            if warm:
+                if WARM_PROCESS is None or WARM_PROCESS.poll() is not None:
+                    stop_warm_worker()
+                    WARM_PROCESS = subprocess.Popen(cmd[:-1] + ["--serve"], cwd=ROOT,
+                        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+                process = WARM_PROCESS
+            else:
+                process = subprocess.Popen(cmd, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
             with LOCK:
                 job["process"] = process
                 job["status"] = "running"
                 cancelled = job.get("cancelled", False)
             if cancelled:
                 process.terminate()
+            if warm and not cancelled:
+                process.stdin.write((json.dumps(cmd[-1]) + "\n").encode())
+                process.stdin.flush()
+            completed = False
             pending = b""
             while chunk := os.read(process.stdout.fileno(), 4096):
                 log.write(chunk.decode("utf-8", errors="replace"))
@@ -317,19 +374,32 @@ def run_job(job_id: str, cmd: list[str]) -> None:
                 lines = re.split(rb"[\r\n]", pending)
                 pending = lines.pop()
                 for line in lines:
+                    if warm and line == b"PLAYGROUND_DONE 0":
+                        completed = True
+                        continue
                     consume_progress(job, line.decode("utf-8", errors="replace"))
                 # Native progress bars start with CR and have no terminating newline.
                 # Parse their partial line now instead of waiting for the next step.
                 if pending:
                     consume_progress(job, pending.decode("utf-8", errors="replace"))
+                if completed:
+                    break
             if pending:
                 consume_progress(job, pending.decode("utf-8", errors="replace"))
-            process.stdout.close()
-            code = process.wait()
+            if warm and completed:
+                code = 0
+            else:
+                if warm:
+                    stop_warm_worker()
+                else:
+                    process.stdout.close()
+                code = process.wait()
         with LOCK:
             job["status"] = "cancelled" if job.get("cancelled") else ("done" if code == 0 and Path(job["output"]).is_file() else "error")
             job["returncode"] = code
     except OSError as exc:
+        if warm:
+            stop_warm_worker()
         with LOCK:
             job["status"] = "error"
             job["error"] = str(exc)
@@ -442,7 +512,17 @@ class Handler(BaseHTTPRequestHandler):
         size = int(self.headers.get("Content-Length", "0"))
         if size < 1 or size > MAX_BODY:
             raise ValueError("Request is empty or too large.")
-        data = json.loads(self.rfile.read(size))
+        # rbufsize=0 is required by WebSocket reads; raw HTTP reads may be short.
+        body = bytearray()
+        while len(body) < size:
+            chunk = self.rfile.read(min(size - len(body), 65536))
+            if not chunk:
+                raise ValueError("Upload ended before the complete request arrived. Please retry.")
+            body.extend(chunk)
+        try:
+            data = json.loads(body)
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            raise ValueError("Invalid JSON request. Please retry the upload.") from exc
         if not isinstance(data, dict):
             raise ValueError("Expected a JSON object.")
         return data
@@ -504,6 +584,21 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(content)
 
+    def do_DELETE(self):
+        if not self.authorized():
+            return
+        path = urlparse(self.path).path
+        match = re.fullmatch(r"/api/history(?:/([a-f0-9]{32}))?", path)
+        if not match:
+            return self.json_response(404, {"error": "Unknown endpoint."})
+        try:
+            deleted = delete_history(match.group(1))
+            return self.json_response(200, {"deleted": deleted})
+        except ValueError as exc:
+            return self.json_response(409, {"error": str(exc)})
+        except OSError:
+            return self.json_response(500, {"error": "Could not delete history. Refresh and retry."})
+
     def do_POST(self) -> None:
         global ACTIVE
         if not self.authorized():
@@ -553,6 +648,8 @@ class Handler(BaseHTTPRequestHandler):
                 if not job:
                     return self.json_response(404, {"error": "Job not found."})
                 with LOCK:
+                    if ACTIVE != match.group(1) or job["status"] in {"done", "error", "cancelled"}:
+                        return self.json_response(409, {"error": "Job is no longer running."})
                     job["cancelled"] = True
                     process = job.get("process")
                 if process and process.poll() is None:

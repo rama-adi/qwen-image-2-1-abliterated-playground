@@ -1,10 +1,33 @@
-"""One render per process: BF16 models, bounded GPU lifetime, no quantization."""
+"""Reusable BF16 render worker. Cancellation/errors terminate its CUDA context."""
 import gc
 import json
 import os
 from pathlib import Path
 import sys
 import struct
+
+PIPELINE = None
+PIPELINE_KEY = None
+
+def release_pipeline():
+    global PIPELINE, PIPELINE_KEY
+    PIPELINE = None
+    PIPELINE_KEY = None
+    gc.collect()
+    import torch
+    torch.cuda.empty_cache()
+
+def get_pipeline(root, request):
+    global PIPELINE, PIPELINE_KEY
+    key = (str(root), bool(request.get("offload", True)), bool(request.get("live_preview", True)))
+    if PIPELINE is not None and PIPELINE_KEY == key:
+        print("Reusing warm BF16 image pipeline", flush=True)
+        return PIPELINE
+    release_pipeline()
+    PIPELINE = load_pipeline(root, request)
+    PIPELINE_KEY = key
+    return PIPELINE
+
 
 
 def emit_progress(**event):
@@ -115,6 +138,33 @@ def rewrite_prompt(prompt, root):
     return result
 
 
+def load_pipeline(root, request):
+    import torch
+    from diffusers import QwenImage21Pipeline
+    from transformers import Qwen3VLForConditionalGeneration
+    print("Loading BF16 Heretic encoder and official BF16 DiT / VAE…", flush=True)
+    emit_progress(stage="loading", step=0)
+    for directory in (root / "encoder", root / "pipeline" / "transformer", root / "pipeline" / "vae"):
+        verify_checkpoint(directory)
+    encoder = Qwen3VLForConditionalGeneration.from_pretrained(
+        root / "encoder", dtype=torch.bfloat16, local_files_only=True)
+    pipe = QwenImage21Pipeline.from_pretrained(root / "pipeline", text_encoder=encoder,
+        torch_dtype=torch.bfloat16, local_files_only=True)
+    for name in ("text_encoder", "transformer", "vae"):
+        assert_bf16(getattr(pipe, name), name)
+    pipe.vae.enable_tiling()
+    if request.get("offload", True):
+        if request.get("live_preview", True):
+            # A VAE preview must not evict the transformer on every sampling step.
+            pipe.model_cpu_offload_seq = "text_encoder->transformer"
+            pipe._exclude_from_cpu_offload = [*pipe._exclude_from_cpu_offload, "vae"]
+        pipe.enable_model_cpu_offload()
+    else:
+        pipe.to("cuda")
+
+    return pipe
+
+
 def render(request):
     import torch
     from diffusers import QwenImage21Pipeline
@@ -131,6 +181,7 @@ def render(request):
     if request.get("rewrite"):
         if request.get("input_mode") == "edit":
             raise ValueError("BF16 PE-T2I rewrites new scenes only. Disable rewriting for image edits.")
+        release_pipeline()
         print("Rewriting prompt with BF16 Heretic PE-T2I…", flush=True)
         emit_progress(stage="rewriting", step=0)
         result = rewrite_prompt(prompt, root)
@@ -143,21 +194,9 @@ def render(request):
     metadata["model_revisions"] = json.loads((Path(__file__).parent / "models.lock.json").read_text())
     metadata_path.write_text(json.dumps(metadata, indent=2))
 
-    print("Loading BF16 Heretic encoder and official BF16 DiT / VAE…", flush=True)
-    emit_progress(stage="loading", step=0)
-    for directory in (root / "encoder", root / "pipeline" / "transformer", root / "pipeline" / "vae"):
-        verify_checkpoint(directory)
-    encoder = Qwen3VLForConditionalGeneration.from_pretrained(
-        root / "encoder", dtype=torch.bfloat16, local_files_only=True)
-    pipe = QwenImage21Pipeline.from_pretrained(root / "pipeline", text_encoder=encoder,
-        torch_dtype=torch.bfloat16, local_files_only=True)
-    for name in ("text_encoder", "transformer", "vae"):
-        assert_bf16(getattr(pipe, name), name)
-    pipe.vae.enable_tiling()
-    if request.get("offload", True):
-        pipe.enable_model_cpu_offload()
-    else:
-        pipe.to("cuda")
+    pipe = get_pipeline(root, request)
+    torch.cuda.reset_peak_memory_stats()
+    print("Encoding prompt and running first sampling step…", flush=True)
 
     def progress(_pipe, step, _timestep, tensors):
         current = step + 1
@@ -180,5 +219,16 @@ def render(request):
     print(f"Saved {output}; peak CUDA allocation: {torch.cuda.max_memory_allocated() / 2**30:.2f} GiB", flush=True)
 
 
+def serve():
+    # One request at a time. An exception exits the worker, releasing all GPU state.
+    for line in sys.stdin:
+        request_path = json.loads(line)
+        render(json.loads(Path(request_path).read_text()))
+        print("PLAYGROUND_DONE 0", flush=True)
+
+
 if __name__ == "__main__":
-    render(json.loads(Path(sys.argv[1]).read_text()))
+    if sys.argv[1] == "--serve":
+        serve()
+    else:
+        render(json.loads(Path(sys.argv[1]).read_text()))

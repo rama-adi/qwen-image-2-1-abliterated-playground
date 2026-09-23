@@ -52,7 +52,7 @@ The RunPod template title is **Qwen Image 2.1 Uncensored Quickstart**. A [paste-
 5. Open port 8765 through RunPod's **Connect** menu, or `https://POD_ID-8765.proxy.runpod.net/`. Sign in as **`playground`** with your `PLAYGROUND_PASSWORD` (template default: **`password`**).
 6. Start with 1024×1024, 40 steps, CFG 1, and **Keep model weights in RAM** enabled. That uses model CPU offloading without quantizing weights. For the first functional test, use 512×512 and 1 step; this is not a quality setting.
 
-GPU sizing above is an estimate, not a measured peak guarantee. The BF16 image pipeline has about 32 GB of weights before activations/cache. The rewriter runs first and is unloaded before the image pipeline. Each render uses a fresh worker process so cancellation/completion releases CUDA allocations. Offloading trades speed for lower VRAM demand. If a render runs out of memory, lower the resolution or set `PLAYGROUND_KV_CACHE=0`; precision stays BF16.
+GPU sizing above is an estimate, not a measured peak guarantee. The BF16 image pipeline has about 32 GB of weights before activations/cache. The rewriter runs first and is unloaded before the image pipeline. RunPod keeps its worker and image pipeline warm after successful renders. The next render reuses the loaded weights; the first render still loads them. Cancellation or a worker error releases the worker. Changing offloading or live-preview mode reloads the pipeline; enabling prompt rewriting releases it before loading the rewriter to avoid holding both models in memory. Offloading trades speed for lower VRAM demand. If a render runs out of memory, lower the resolution or set `PLAYGROUND_KV_CACHE=0`; precision stays BF16.
 
 ### Environment variables and credentials
 
@@ -64,6 +64,7 @@ Set these under your **RunPod template/Pod → Environment Variables**. Use the 
 | --- | --- | --- |
 | `PLAYGROUND_PASSWORD` | **Required**; template default `password` | Browser username is `playground`. Change the shared default before exposing your Pod; generate a replacement with your password manager or `openssl rand -hex 24`. |
 | `HF_TOKEN` | Optional, unset | [Hugging Face → Settings → Access Tokens](https://huggingface.co/settings/tokens). Create a **read** token if anonymous downloads are throttled or access requirements change. Current public models normally need none. |
+| `PLAYGROUND_KEEP_WARM` | `1` | Reuse the RunPod image pipeline between renders. Set `0` to release all model memory after every render. |
 | `PLAYGROUND_REWRITER` | `1` | Set `0` to skip the optional BF16 prompt-rewriter download and hide its checkbox. This is a setting you choose, not a credential. |
 | `PLAYGROUND_DOWNLOAD_MODELS` | `1` | Keep enabled. Set `0` only after the same pinned checkpoints are already present in `/workspace/models`. |
 | `PLAYGROUND_KV_CACHE` | `1` | Set `0` to reduce inference cache memory. |
@@ -78,6 +79,14 @@ The `password` default is a RunPod template setting, not a container fallback. S
 For a **private GHCR package**, create a [GitHub personal access token (classic)](https://github.com/settings/tokens/new) with `read:packages`. In RunPod's container registry credentials, set username `rama-adi`, password to that token, and attach the credential to the template. Do not put this token in the container's environment or commit it. A public package needs no registry credentials.
 
 The workflow publishes the image; it does not rent a GPU or deploy paid Pods. No `RUNPOD_API_KEY` is needed for deployment through the console.
+
+### Repeated renders and history
+
+Keep **Expand scene with Heretic** off when you want uninterrupted warm pipeline reuse. Uncheck **Keep model weights in RAM** to keep the entire image pipeline on GPU between renders, subject to available VRAM; with it checked, weights stay loaded with CPU offloading. Live previews keep the VAE resident on GPU so each preview no longer offloads the diffusion model. This uses additional VRAM during preview decoding; disable previews if memory is tight. Look for `Reusing warm BF16 image pipeline` in subsequent job logs.
+
+Left-side settings stay unchanged when generating and are saved within the browser tab across refreshes (uploaded reference images must be selected again). **Seed `0` picks a random seed for each render**; the actual seed is saved with the image and shown in history. A nonzero seed is reproducible with the same settings.
+
+Use **Delete** beside a history image or **Delete all history** to remove saved renders, including their prompts, previews, and logs. Both ask for confirmation. Deletion is blocked while a render is active; model weights are never deleted.
 
 ### Prompt rewriting and image editing
 

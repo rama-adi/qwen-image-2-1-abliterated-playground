@@ -37,8 +37,8 @@ function payload() {
     seed: Number($('seed').value), rewrite: $('rewrite').checked, steps: Number($('steps').value), cfg: Number($('cfg').value), vae_cpu: $('vaeCpu').checked, offload: $('offload').checked, live_preview: $('livePreview').checked, preview_interval: Number($('previewInterval').value),
     settings: state.settings };
 }
-async function api(path, body) {
-  const response = await fetch(path, { method: body === undefined ? 'GET' : 'POST', headers: body === undefined ? {} : { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
+async function api(path, body, method = null) {
+  const response = await fetch(path, { method: method || (body === undefined ? 'GET' : 'POST'), headers: body === undefined ? {} : { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
   const data = await response.json();
   if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
   return data;
@@ -66,7 +66,7 @@ function showImage(url, item = null) {
     const title = document.createElement('strong');
     title.textContent = item.scene;
     const detail = document.createElement('span');
-    detail.textContent = [item.input_mode === 'edit' ? 'Edited image' : '', item.width && item.height ? `${item.width} × ${item.height}` : '', item.steps ? `${item.steps} steps` : ''].filter(Boolean).join(' · ');
+    detail.textContent = [item.input_mode === 'edit' ? 'Edited image' : '', item.width && item.height ? `${item.width} × ${item.height}` : '', item.steps ? `${item.steps} steps` : '', item.seed !== undefined ? `Seed ${item.seed}` : ''].filter(Boolean).join(' · ');
     meta.append(title, detail);
     if (item.prompt) {
       const details = document.createElement('details');
@@ -123,6 +123,23 @@ function selectHistory(item) {
   if (!state.job) $('log').textContent = 'Showing a saved render.';
   renderHistory();
 }
+async function deleteHistory(id = null) {
+  const message = id ? 'Delete this image and its saved prompt, previews, and logs? This cannot be undone.' : 'Delete ALL saved images, prompts, previews, and logs? This cannot be undone.';
+  if (!confirm(message)) return;
+  try {
+    const result = await api('/api/history' + (id ? '/' + id : ''), undefined, 'DELETE');
+    if (result.deleted.includes(state.sourceHistoryId)) $('clearReference').click();
+    if (result.deleted.includes(state.selectedHistoryId)) {
+      state.selectedHistoryId = null;
+      $('outputImage').hidden = true;
+      $('outputImage').removeAttribute('src');
+      $('emptyState').hidden = false;
+      $('resultActions').hidden = true;
+      $('previewMeta').hidden = true;
+    }
+    await loadHistory();
+  } catch (error) { showError(error.message); }
+}
 function renderHistory() {
   const list = $('historyList');
   list.replaceChildren();
@@ -140,7 +157,12 @@ function renderHistory() {
     const time = document.createElement('small'); time.textContent = (item.input_mode === 'edit' ? 'Edited · ' : '') + new Date(item.created_at * 1000).toLocaleString();
     content.append(title, time); button.append(image, content);
     button.onclick = () => selectHistory(item);
-    list.append(button);
+    const row = document.createElement('div'); row.className = 'history-row';
+    const remove = document.createElement('button'); remove.type = 'button';
+    remove.className = 'history-delete'; remove.textContent = 'Delete';
+    remove.setAttribute('aria-label', 'Delete image: ' + item.scene);
+    remove.onclick = () => deleteHistory(item.id);
+    row.append(button, remove); list.append(row);
   }
 }
 async function loadHistory() {
@@ -186,6 +208,7 @@ async function displayProgress(job) {
       showImage(job.image + '?t=' + Date.now());
       state.selectedHistoryId = job.id;
       await loadHistory();
+      showImage(job.image, state.history.find(item => item.id === job.id));
     } else showError(job.error || (job.status === 'cancelled' ? 'Render cancelled.' : 'Generation failed. See the log for details.'));
   }
 }
@@ -249,6 +272,26 @@ function renderSettings() {
     const input = document.createElement('input'); input.id = 'model-' + key; input.value = state.settings[key] || state.defaults[key] || ''; input.autocomplete = 'off'; wrap.append(input); $('modelFields').append(wrap);
   }
 }
+function preserveConfig(backend) {
+  const key = 'playground-form-' + backend;
+  const controls = [...document.querySelectorAll('.editor input[id], .editor textarea[id], .editor select[id]')].filter(el => el.type !== 'file');
+  try {
+    const saved = JSON.parse(sessionStorage.getItem(key) || 'null');
+    if (saved) {
+      for (const el of controls) if (Object.hasOwn(saved.fields, el.id)) {
+        if (el.type === 'checkbox') el.checked = saved.fields[el.id]; else el.value = saved.fields[el.id];
+      }
+      state.characters = saved.characters || []; renderCharacters();
+    }
+  } catch {}
+  const save = () => {
+    const fields = Object.fromEntries(controls.map(el => [el.id, el.type === 'checkbox' ? el.checked : el.value]));
+    try { sessionStorage.setItem(key, JSON.stringify({fields, characters: state.characters})); } catch {}
+  };
+  document.querySelector('.editor').addEventListener('input', save);
+  document.querySelector('.editor').addEventListener('change', save);
+  window.addEventListener('pagehide', save);
+}
 async function init() {
   const config = await api('/api/config'); state.defaults = config.defaults;
   $('vaeCpu').checked = Boolean(config.vae_cpu_default);
@@ -265,6 +308,7 @@ async function init() {
   }
   try { state.settings = JSON.parse(localStorage.getItem('qwen-image-2-1-abliterated-playground-model-paths') || '{}'); } catch { state.settings = {}; }
   renderSettings();
+  preserveConfig(config.backend);
   $('settingsButton').onclick = () => $('settingsDialog').showModal();
   $('settingsDialog').addEventListener('close', () => { if ($('settingsDialog').returnValue === 'save') { for (const key of Object.keys(modelLabels)) state.settings[key] = $('model-' + key).value.trim(); localStorage.setItem('qwen-image-2-1-abliterated-playground-model-paths', JSON.stringify(state.settings)); } });
   $('resetSettings').onclick = () => { state.settings = {}; localStorage.removeItem('qwen-image-2-1-abliterated-playground-model-paths'); renderSettings(); };
@@ -272,6 +316,7 @@ async function init() {
   $('inputMode').onchange = updateInputMode;
   $('generate').onclick = generate;
   $('editResult').onclick = editHistoryImage;
+  $('deleteAllHistory').onclick = () => deleteHistory();
   $('refreshHistory').onclick = () => loadHistory().catch(error => showError(error.message));
   $('cancel').onclick = async () => { if (state.job) await api('/api/jobs/' + state.job + '/cancel', {}); };
   $('livePreview').onchange = () => { $('previewInterval').disabled = !$('livePreview').checked; };

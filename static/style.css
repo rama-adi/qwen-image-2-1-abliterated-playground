@@ -30,3 +30,5 @@ dialog{width:min(560px,calc(100vw - 30px));border:1px solid #5a4b66;border-radiu
 .brand{min-width:0}.brand>div{min-width:0}.brand strong{overflow-wrap:anywhere;line-height:1.15}.topbar{min-height:58px;height:auto;padding-top:9px;padding-bottom:9px;gap:12px}.top-actions{flex-shrink:0}
 
 .stream-progress{display:grid;gap:7px;margin-top:12px;color:var(--muted);font-size:12px}.stream-progress progress{width:100%;height:7px;accent-color:var(--accent)}.log-step{color:var(--accent);font-size:10px;margin-left:auto;margin-right:10px}.progress-heading{flex-wrap:wrap;gap:6px}
+
+.history-row{display:flex;align-items:center;gap:6px}.history-row .history-item{flex:1;min-width:0}.history-delete{background:transparent;border:1px solid var(--line);border-radius:6px;color:#e4a6a6;padding:6px;cursor:pointer;font-size:11px}#deleteAllHistory{margin-bottom:12px}
