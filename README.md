@@ -15,7 +15,7 @@ A browser playground for Qwen Image 2.1 with a Heretic text encoder: scene and c
 | Engine | stable-diffusion.cpp / Metal | PyTorch / CUDA / Diffusers |
 | Intermediate image preview | Every step by default | Every step by default using the BF16 VAE |
 
-Heretic modifies the language components. The DiT and VAE remain official weights; they are not advertised here as abliterated derivatives. Reduced refusal scores in the model cards are not a guarantee about every output. BF16 is the native unquantized checkpoint precision, not FP32 arithmetic throughout; architecture-required FP32 parameters/operations remain full precision. This is an experimental single-user application. Users are responsible for their inputs and outputs.
+Heretic modifies the language components. The DiT and VAE remain official weights; they are not advertised here as abliterated derivatives. BF16 is the native unquantized checkpoint precision, not FP32 arithmetic throughout; architecture-required FP32 parameters/operations remain full precision. This is an experimental single-user application. **Uncensored by design:** Heretic / abliterated behavior is intentional, and this application adds no content filter. This is an experimental tool that can generate explicit, sensitive, or offensive material. Exercise discretion. You are responsible for your prompts, generated content, and any use or sharing of the output.
 
 The RunPod template title is **Qwen Image 2.1 Uncensored Quickstart**. A [paste-ready template description](docs/runpod-description.md) is included.
 
@@ -36,10 +36,10 @@ The RunPod template title is **Qwen Image 2.1 Uncensored Quickstart**. A [paste-
    | HTTP port | `8765` |
    | TCP ports | None required |
    | Container start command | Leave blank; use the image entrypoint |
-   | Environment | Set `PLAYGROUND_PASSWORD`; see table below |
+   | Environment | Template default: `PLAYGROUND_PASSWORD=password`; change before exposing your Pod |
 
 4. First startup checks CUDA/BF16 support and downloads pinned model snapshots. Expect roughly 50 GB of weights with the rewriter, plus cache/metadata overhead. Startup can take several minutes. Application code lives at `/app`, so the `/workspace` mount cannot hide it.
-5. Open port 8765 through RunPod's **Connect** menu, or `https://POD_ID-8765.proxy.runpod.net/`. Sign in as **`playground`** with your `PLAYGROUND_PASSWORD`.
+5. Open port 8765 through RunPod's **Connect** menu, or `https://POD_ID-8765.proxy.runpod.net/`. Sign in as **`playground`** with your `PLAYGROUND_PASSWORD` (template default: **`password`**).
 6. Start with 1024×1024, 40 steps, CFG 1, and **Keep model weights in RAM** enabled. That uses model CPU offloading without quantizing weights. For the first functional test, use 512×512 and 1 step; this is not a quality setting.
 
 GPU sizing above is an estimate, not a measured peak guarantee. The BF16 image pipeline has about 32 GB of weights before activations/cache. The rewriter runs first and is unloaded before the image pipeline. Each render uses a fresh worker process so cancellation/completion releases CUDA allocations. Offloading trades speed for lower VRAM demand. If a render runs out of memory, lower the resolution or set `PLAYGROUND_KV_CACHE=0`; precision stays BF16.
@@ -52,7 +52,7 @@ Set these under your **RunPod template/Pod → Environment Variables**. Use the 
 
 | Variable | Required? / default | Where to get it / purpose |
 | --- | --- | --- |
-| `PLAYGROUND_PASSWORD` | **Required** | Generate a unique password in your password manager or with `openssl rand -hex 24`. Browser username is `playground`. |
+| `PLAYGROUND_PASSWORD` | **Required**; template default `password` | Browser username is `playground`. Change the shared default before exposing your Pod; generate a replacement with your password manager or `openssl rand -hex 24`. |
 | `HF_TOKEN` | Optional, unset | [Hugging Face → Settings → Access Tokens](https://huggingface.co/settings/tokens). Create a **read** token if anonymous downloads are throttled or access requirements change. Current public models normally need none. |
 | `PLAYGROUND_REWRITER` | `1` | Set `0` to skip the optional BF16 prompt-rewriter download and hide its checkbox. This is a setting you choose, not a credential. |
 | `PLAYGROUND_DOWNLOAD_MODELS` | `1` | Keep enabled. Set `0` only after the same pinned checkpoints are already present in `/workspace/models`. |
@@ -62,6 +62,8 @@ Set these under your **RunPod template/Pod → Environment Variables**. Use the 
 | `PLAYGROUND_OUTPUT_DIR` | `/workspace/outputs` | Usually leave unchanged. |
 | `HF_HOME` | `/workspace/huggingface` | Usually leave unchanged; keeps Hugging Face cache on the volume. |
 | `PORT` | `8765` | If changed, also change the exposed HTTP port and healthcheck. |
+
+The `password` default is a RunPod template setting, not a container fallback. Set `PLAYGROUND_PASSWORD=password` when creating the template; an unset or empty value still prevents RunPod startup. Localhost-only Mac use does not require a password.
 
 For a **private GHCR package**, create a [GitHub personal access token (classic)](https://github.com/settings/tokens/new) with `read:packages`. In RunPod's container registry credentials, set username `rama-adi`, password to that token, and attach the credential to the template. Do not put this token in the container's environment or commit it. A public package needs no registry credentials.
 
