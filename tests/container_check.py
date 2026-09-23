@@ -12,6 +12,7 @@ from transformers import Qwen3VLForConditionalGeneration, AutoModelForImageTextT
 
 assert torch.version.cuda, 'Expected CUDA-enabled PyTorch'
 subprocess.run([sys.executable, '-m', 'unittest', 'discover', '-s', '/checks', '-p', 'test_adapter_compat.py', '-v'], check=True)
+subprocess.run([sys.executable, '-m', 'unittest', 'discover', '-s', '/checks', '-p', 'test_guidance_math.py', '-v'], check=True)
 env = {**os.environ, 'PLAYGROUND_PASSWORD': 'ci-test-only', 'PLAYGROUND_DOWNLOAD_MODELS': '0',
        'PLAYGROUND_REQUIRE_CUDA': '0', 'PORT': '8765'}
 process = subprocess.Popen(['bash', '/usr/local/bin/playground-entrypoint'], env=env)

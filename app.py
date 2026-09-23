@@ -19,6 +19,7 @@ import sys
 import threading
 import time
 import uuid
+from guidance import settings as guidance_settings
 from reference_roles import selected_references, reference_instructions
 from lora_store import Store as LoraStore, CHUNK_SIZE
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -117,6 +118,11 @@ def make_command(data: dict, reference: Path | list[Path] | None, output: Path) 
     height = integer("height", 256, 2048, 768)
     if width % 32 or height % 32:
         raise ValueError("Width and height must be divisible by 32.")
+    sampler = data.get('sampler', 'euler')
+    if sampler not in ('euler', 'seeds_2'):
+        raise ValueError('Choose Euler or SEEDS-2.')
+    if sampler == 'seeds_2' and BACKEND != 'diffusers':
+        raise ValueError('SEEDS-2 currently requires RunPod / Diffusers.')
     steps = integer("steps", 1, 100, 30)
     try:
         cfg = float(data.get("cfg", 6))
@@ -124,6 +130,12 @@ def make_command(data: dict, reference: Path | list[Path] | None, output: Path) 
         raise ValueError("CFG must be a number.") from None
     if not 0.1 <= cfg <= 20:
         raise ValueError("CFG must be between 0.1 and 20.")
+    workflow_expand = data.get('workflow_expand', False)
+    if not isinstance(workflow_expand, bool):
+        raise ValueError('Workflow prompt expansion must be true or false.')
+    if workflow_expand and (BACKEND != 'diffusers' or data.get('input_mode') == 'edit' or data.get('rewrite')):
+        raise ValueError('Workflow prompt expansion requires RunPod new-image mode with the PE-T2I rewriter disabled.')
+    guidance = guidance_settings(data, BACKEND, cfg)
     seed = integer("seed", 0, 2**32 - 1, 0)
     if seed == 0:
         seed = secrets.randbelow(2**32 - 1) + 1
@@ -134,7 +146,7 @@ def make_command(data: dict, reference: Path | list[Path] | None, output: Path) 
             raise ValueError("Prompt rewriting is disabled. Set PLAYGROUND_REWRITER=1 and restart the Pod.")
         if data.get("rewrite") and data.get("input_mode") == "edit":
             raise ValueError("Disable scene rewriting for image edits.")
-        request = {"lora": lora, "prompt": assembled_prompt(data), "reference": str(references[0]) if references else None, "references": [str(path) for path in references],
+        request = {**guidance, "workflow_expand": workflow_expand, "scene": str(data.get("scene", "")), "sampler": sampler, "lora": lora, "prompt": assembled_prompt(data), "reference": str(references[0]) if references else None, "references": [str(path) for path in references],
                    "reference_instructions": reference_instructions(data),
                    "output": str(output), "width": width, "height": height, "steps": steps,
                    "cfg": cfg, "seed": seed, "negative": str(data.get("negative", "")),
@@ -312,7 +324,8 @@ def history_records() -> list[dict]:
         settings = {key: metadata.get(key, request.get(key)) for key in (
             'scene', 'prompt', 'negative', 'characters', 'width', 'height', 'steps', 'cfg', 'seed',
             'backend', 'precision', 'offload', 'vae_cpu', 'vae_tiling', 'kv_cache', 'rewrite',
-            'live_preview', 'preview_interval', 'input_mode', 'source_history_id', 'reference_id', 'references', 'model_settings', 'model_revisions')}
+            'live_preview', 'preview_interval', 'input_mode', 'source_history_id', 'reference_id', 'references', 'model_settings', 'model_revisions',
+            'sampler', 'schedule', 'denoise', 'workflow_expand', 'workflow_expansion_settings', 'apg', 'apg_eta', 'apg_norm', 'apg_momentum', 'fresca', 'fresca_low', 'fresca_high', 'fresca_cutoff')}
         lora = metadata.get('lora', request.get('lora'))
         settings['lora'] = {k: lora.get(k) for k in ('id', 'name', 'sha256', 'strength', 'format')} if lora else None
         settings['has_reference'] = bool(metadata.get('references')) or any((directory / ('reference.' + ext)).is_file() for ext in ('png', 'jpg', 'webp'))
@@ -770,6 +783,9 @@ class Handler(BaseHTTPRequestHandler):
                                 "lora": LORAS.selection(data.get("lora_id"), data.get("lora_strength", 1)),
                                 "created_at": time.time()}
                     metadata.update({key: data.get(key) for key in ('negative', 'characters', 'reference_id')})
+                    metadata["workflow_expand"] = bool(data.get("workflow_expand", False))
+                    metadata.update(sampler=data.get('sampler', 'euler'), schedule='sgm_uniform' if data.get('sampler') == 'seeds_2' else 'flow_dynamic', denoise=1.0)
+                    metadata.update(guidance_settings(data, BACKEND, float(data.get('cfg', 6))))
                     metadata['references'] = selected_references(data)
                     if BACKEND == 'sd-cpp':
                         metadata['model_settings'] = {key: data.get('settings', {}).get(key) or value for key, value in DEFAULTS.items()}

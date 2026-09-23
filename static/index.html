@@ -50,6 +50,8 @@
         <p class="hint">Use an adapter trained for Qwen Image 2.1. Add any trigger words to your scene.</p>
         <label>Adapter<select id="loraSelect"><option value="">None</option></select></label>
         <label>Strength<input id="loraStrength" type="number" min="0" max="2" step="0.05" value="1"></label>
+        <button id="recommendedSettings" type="button" class="secondary">Use recommended settings</button>
+        <p id="recommendedHint" class="hint">Qwen 2.1 Fix workflow: strength 1, seed 79, 20 steps, CFG 3, SEEDS-2 / SGM Uniform, negative prompt, APG + FreSca, and workflow prompt expansion. Your scene and canvas stay unchanged.</p>
         <label>Upload .safetensors<input id="loraFile" type="file" accept=".safetensors"></label>
         <p id="loraStatus" class="hint" role="status">Up to 2 GiB. Uploads are saved for reuse.</p>
       </div>
@@ -63,6 +65,23 @@
           <label>Seed (0 = random)<input id="seed" type="number" min="0" max="4294967295" value="0"></label>
           <label>CFG<input id="cfg" type="number" min="0.1" max="20" step="0.1" value="6"></label>
         </div>
+        <label id="samplerControl">Sampler<select id="sampler"><option value="euler">Euler / dynamic flow schedule</option><option value="seeds_2">SEEDS-2 / SGM Uniform</option></select></label>
+        <label id="workflowExpandControl" class="checkbox"><input id="workflowExpand" type="checkbox"><span>Workflow prompt expansion <small>512 tokens, temperature 0.7, top-k 64, top-p 0.95, min-p 0.05, seed 0, thinking off</small></span></label>
+        <details id="guidanceControls"><summary>APG / FreSca guidance</summary>
+          <p class="hint">RunPod only. Requires CFG greater than 1.</p>
+          <label class="checkbox"><input id="apg" type="checkbox"><span>APG — projected guidance</span></label>
+          <div class="settings-grid">
+            <label>APG eta<input id="apgEta" type="number" min="-10" max="10" step="0.01" value="1"></label>
+            <label>Norm threshold<input id="apgNorm" type="number" min="0" max="50" step="0.1" value="10"></label>
+            <label>Momentum<input id="apgMomentum" type="number" min="-5" max="1" step="0.01" value="0.3"></label>
+          </div>
+          <label class="checkbox"><input id="fresca" type="checkbox"><span>FreSca — frequency guidance</span></label>
+          <div class="settings-grid">
+            <label>Low frequencies<input id="frescaLow" type="number" min="0" max="10" step="0.01" value="1"></label>
+            <label>High frequencies<input id="frescaHigh" type="number" min="0" max="10" step="0.01" value="2"></label>
+            <label>Frequency cutoff<input id="frescaCutoff" type="number" min="1" max="10000" step="1" value="8"></label>
+          </div>
+        </details>
         <label class="checkbox"><input id="vaeCpu" type="checkbox" checked><span>Decode VAE on CPU <small>Useful on Apple Silicon; leave off on NVIDIA GPUs</small></span></label>
         <label class="checkbox"><input id="offload" type="checkbox"><span>Keep model weights in RAM <small>Reduces GPU memory use without changing weight precision</small></span></label>
         <label class="checkbox"><input id="livePreview" type="checkbox" checked><span>Live preview <small>Shows intermediate images while sampling; each preview adds VAE decode time</small></span></label>

@@ -1,4 +1,5 @@
 """Reusable BF16 render worker. Cancellation/errors terminate its CUDA context."""
+from guidance import guided_sampling
 from adapter_compat import load_adapter
 import gc
 import json
@@ -214,14 +215,33 @@ def render(request):
         if request.get("reference_instructions"):
             prompt += "\n\n" + request["reference_instructions"]
         # The user's chosen canvas wins over the rewriter's aspect-ratio suggestion.
+    pipe = get_pipeline(root, request)
+    if request.get('workflow_expand'):
+        from workflow_expand import expand, CONFIG
+        emit_progress(stage='rewriting', step=0)
+        print('Workflow prompt expansion: 512 tokens, seed 0, thinking off', flush=True)
+        expanded = expand(pipe, request.get('scene', prompt))
+        # Keep any additional character/reference instructions supplied by the user.
+        original_scene = request.get('scene', '')
+        prompt = prompt.replace(original_scene, expanded, 1) if original_scene else expanded
+        (output.parent / 'workflow-expansion.json').write_text(json.dumps({'prompt':expanded, 'settings':{**CONFIG, 'seed':0, 'thinking':False}}))
     metadata_path = output.parent / "metadata.json"
     metadata = json.loads(metadata_path.read_text())
     metadata.update(prompt=prompt, seed=seed, precision="bfloat16", backend="diffusers",
                     vae_tiling=os.environ.get("PLAYGROUND_VAE_TILING", "0") == "1")
     metadata["model_revisions"] = json.loads((Path(__file__).parent / "models.lock.json").read_text())
+    if request.get('workflow_expand'):
+        metadata['workflow_expansion_settings'] = {**CONFIG, 'seed':0, 'thinking':False}
     metadata_path.write_text(json.dumps(metadata, indent=2))
 
-    pipe = get_pipeline(root, request)
+    from diffusers import FlowMatchEulerDiscreteScheduler
+    if not hasattr(pipe, '_playground_scheduler_config'):
+        pipe._playground_scheduler_config = dict(pipe.scheduler.config)
+    if request.get('sampler') == 'seeds_2':
+        from seeds_scheduler import Seeds2Scheduler
+        pipe.scheduler = Seeds2Scheduler(seed=seed)
+    else:
+        pipe.scheduler = FlowMatchEulerDiscreteScheduler.from_config(pipe._playground_scheduler_config)
     torch.cuda.reset_peak_memory_stats()
     print("Encoding prompt and running first sampling step…", flush=True)
     emit_progress(stage="encoding", step=0)
@@ -229,7 +249,11 @@ def render(request):
 
     def progress(_pipe, step, _timestep, tensors):
         current = step + 1
-        print(f"Sampling {step + 1}/{request['steps']} · {time.monotonic() - sampling_started:.1f}s since encoding started", flush=True)
+        if request.get('sampler') == 'seeds_2':
+            current = pipe.scheduler.completed_steps
+            if pipe.scheduler._step_index < len(pipe.scheduler.stages) and pipe.scheduler.stages[pipe.scheduler._step_index][1] == 1:
+                return tensors  # internal midpoint; emit progress after the logical step
+        print(f"Sampling {current}/{request['steps']} · {time.monotonic() - sampling_started:.1f}s since encoding started", flush=True)
         emit_progress(stage="sampling", step=current)
         if request.get("live_preview", True) and (current % request.get("preview_interval", 1) == 0 or current == request["steps"]):
             emit_progress(stage="preview", step=current)
@@ -245,10 +269,12 @@ def render(request):
         with Image.open(path) as source:
             images.append(source.convert('RGBA'))
     image = images or None
-    result = pipe(prompt=prompt, image=image, negative_prompt=request.get("negative", ""),
-        true_cfg_scale=request["cfg"], width=request["width"], height=request["height"],
-        num_inference_steps=request["steps"], generator=torch.Generator("cuda").manual_seed(seed),
-        callback_on_step_end=progress, use_kv_cache=os.environ.get("PLAYGROUND_KV_CACHE", "1") == "1")
+    print(f"Guidance: APG={request.get('apg', False)}, FreSca={request.get('fresca', False)}", flush=True)
+    with guided_sampling(pipe, request):
+        result = pipe(prompt=prompt, image=image, negative_prompt=request.get("negative", ""),
+            true_cfg_scale=request["cfg"], width=request["width"], height=request["height"],
+            num_inference_steps=request["steps"], generator=torch.Generator("cuda").manual_seed(seed),
+            callback_on_step_end=progress, use_kv_cache=os.environ.get("PLAYGROUND_KV_CACHE", "1") == "1")
     result.images[0].save(output)
     print(f"Saved {output}; peak CUDA allocation: {torch.cuda.max_memory_allocated() / 2**30:.2f} GiB", flush=True)
 

@@ -67,3 +67,25 @@ test('Reuse restores all sidebar controls, assets and actual seed without genera
   await assert.rejects(vm.runInContext('reuseSettings(fixture)',context),/Upload lost/);
   assert.equal(element('scene').value,'A boat');
 });
+
+test('Fix recommendation applies workflow controls while preserving scene and canvas', () => {
+  const elements = new Map();
+  const element = id => {
+    if (!elements.has(id)) elements.set(id,{value:'',checked:false});
+    return elements.get(id);
+  };
+  const context = vm.createContext({document:{getElementById:element,querySelector:()=>({dispatchEvent(){}})},Event:class {}});
+  const source=fs.readFileSync('static/app.js','utf8').replace('init().catch(error => showError(error.message));','');
+  vm.runInContext(source+`
+    state.backend='diffusers'; state.loras=[{id:'fix',name:'qwen-image-2.1-fix-1.0-comfy.safetensors'}];
+    updateInputMode=()=>{}; previewPrompt=()=>{}; setStatus=()=>{};
+  `,context);
+  element('scene').value='My own scene'; element('width').value=1824; element('height').value=1024;
+  vm.runInContext('useRecommendedSettings()',context);
+  for (const [id,value] of Object.entries({scene:'My own scene',width:1824,height:1024,loraSelect:'fix',loraStrength:1,steps:20,cfg:3,seed:79,sampler:'seeds_2',apgEta:1,apgNorm:10,apgMomentum:.3,frescaLow:1,frescaHigh:2,frescaCutoff:8})) {
+    assert.equal(element(id).value,value,id);
+  }
+  for (const id of ['apg','fresca','workflowExpand']) assert.equal(element(id).checked,true,id);
+  assert.equal(element('rewrite').checked,false);
+  assert.match(element('negative').value,/wrong number of fingers$/);
+});

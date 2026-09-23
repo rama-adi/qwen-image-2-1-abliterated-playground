@@ -35,6 +35,9 @@ function payload() {
     references: state.referenceCards.map(({id, source, role, note}) => ({id, source, role, note})), input_mode: $('inputMode').value,
     width: Number($('width').value), height: Number($('height').value),
     seed: Number($('seed').value), rewrite: $('rewrite').checked, steps: Number($('steps').value), cfg: Number($('cfg').value), vae_cpu: $('vaeCpu').checked, offload: $('offload').checked, live_preview: $('livePreview').checked, preview_interval: Number($('previewInterval').value),
+    sampler: state.backend === 'diffusers' ? $('sampler').value : 'euler', workflow_expand: state.backend === 'diffusers' && $('workflowExpand').checked,
+    apg: state.backend === 'diffusers' && $('apg').checked, apg_eta:Number($('apgEta').value), apg_norm:Number($('apgNorm').value), apg_momentum:Number($('apgMomentum').value),
+    fresca: state.backend === 'diffusers' && $('fresca').checked, fresca_low:Number($('frescaLow').value), fresca_high:Number($('frescaHigh').value), fresca_cutoff:Number($('frescaCutoff').value),
     lora_id: $('loraSelect').value, lora_strength: Number($('loraStrength').value),
     settings: state.settings };
 }
@@ -100,13 +103,13 @@ async function reuseSettings(item) {
     if (!saved) throw new Error('A saved reference is no longer available. Add it again before reusing these settings.');
     return {...ref, name:saved.name || saved.scene || 'Saved reference', image:saved.image};
   });
-  const fields = {scene:'scene', negative:'negative', width:'width', height:'height', steps:'steps', cfg:'cfg', seed:'seed', input_mode:'inputMode', preview_interval:'previewInterval'};
+  const fields = {scene:'scene', negative:'negative', width:'width', height:'height', steps:'steps', cfg:'cfg', seed:'seed', input_mode:'inputMode', sampler:'sampler', preview_interval:'previewInterval', apg_eta:'apgEta', apg_norm:'apgNorm', apg_momentum:'apgMomentum', fresca_low:'frescaLow', fresca_high:'frescaHigh', fresca_cutoff:'frescaCutoff'};
   const missing = [];
   for (const [key,id] of Object.entries(fields)) {
     if (settings[key] !== null && settings[key] !== undefined) $(id).value = settings[key];
     else missing.push(key);
   }
-  for (const [key,id] of Object.entries({offload:'offload', vae_cpu:'vaeCpu', live_preview:'livePreview', rewrite:'rewrite'})) {
+  for (const [key,id] of Object.entries({offload:'offload', vae_cpu:'vaeCpu', live_preview:'livePreview', rewrite:'rewrite', workflow_expand:'workflowExpand', apg:'apg', fresca:'fresca'})) {
     if (settings[key] !== null && settings[key] !== undefined) $(id).checked = Boolean(settings[key]);
     else missing.push(key);
   }
@@ -123,6 +126,7 @@ async function reuseSettings(item) {
   }
   if ($('rewriteControl').hidden) $('rewrite').checked = false;
   if (state.backend === 'diffusers') $('vaeCpu').checked = false;
+  else { $('apg').checked = false; $('fresca').checked = false; $('workflowExpand').checked = false; }
   updateInputMode();
   $('previewInterval').disabled = !$('livePreview').checked;
   document.querySelector('.editor').dispatchEvent(new Event('change', {bubbles:true}));
@@ -140,6 +144,8 @@ function updateInputMode() {
   $('scene').placeholder = editing
     ? 'Change the flower petals to deep red, keep the stem, leaves, and background the same.'
     : 'A young witch in a cluttered potion shop, surrounded by glass bottles, herbs, and candles.';
+  $('workflowExpand').disabled = editing;
+  if (editing) $('workflowExpand').checked = false;
   $('rewrite').disabled = editing;
   if (editing) $('rewrite').checked = false;
   previewPrompt();
@@ -388,6 +394,21 @@ async function loadLoras(selected = $('loraSelect').value) {
   for (const item of result.items) select.add(new Option(item.name, item.id));
   if (result.items.some(item => item.id === selected)) select.value = selected;
 }
+function useRecommendedSettings() {
+  if (state.backend !== 'diffusers') { showError('The Qwen 2.1 Fix preset requires RunPod / Diffusers.'); return; }
+  const selected = state.loras.find(item => item.id === $('loraSelect').value);
+  const isFix = item => /^qwen[-_ ]image[-_ ]2[._]1[-_ ]fix[-_ ]1[._]0(?:[-_ ]comfy)?\.safetensors$/i.test(item.name);
+  const fix = selected && isFix(selected) ? selected : state.loras.find(isFix);
+  if (!fix) { showError('Upload qwen-image-2.1-fix-1.0-comfy.safetensors first, then apply its recommended settings.'); return; }
+  $('loraSelect').value = fix.id; $('loraStrength').value = 1;
+  $('steps').value = 20; $('cfg').value = 3; $('seed').value = 79; $('sampler').value = 'seeds_2';
+  $('workflowExpand').checked = true; $('rewrite').checked = false; $('inputMode').value = 'style';
+  $('negative').value = 'artifacts, gpt-image, washed-out colors, low quality, low resolution, AI slop, deviantart, sloppy lines, rough sketch, blurry, indistinct, missing fingers, badly drawn hands, wrong number of fingers';
+  $('apg').checked = true; $('apgEta').value = 1; $('apgNorm').value = 10; $('apgMomentum').value = 0.3;
+  $('fresca').checked = true; $('frescaLow').value = 1; $('frescaHigh').value = 2; $('frescaCutoff').value = 8;
+  document.querySelector('.editor').dispatchEvent(new Event('change', {bubbles:true}));
+  updateInputMode(); showError(''); setStatus('Fix preset applied'); previewPrompt();
+}
 async function uploadLora(file) {
   if (!file) return;
   if (!file.name.toLowerCase().endsWith('.safetensors') || file.size > 2 * 1024 ** 3) {
@@ -455,6 +476,13 @@ async function init() {
   preserveConfig(config.backend);
   $('addSavedReference').onclick = () => addReference(state.references.find(item=>item.id===$('referenceSelect').value));
   updateInputMode();
+  $('samplerControl').hidden = config.backend !== 'diffusers';
+  $('workflowExpandControl').hidden = config.backend !== 'diffusers';
+  $('guidanceControls').hidden = config.backend !== 'diffusers';
+  $('recommendedSettings').disabled = config.backend !== 'diffusers';
+  $('recommendedSettings').onclick = useRecommendedSettings;
+  $('workflowExpand').addEventListener('change', () => { if ($('workflowExpand').checked) $('rewrite').checked = false; });
+  $('rewrite').addEventListener('change', () => { if ($('rewrite').checked) $('workflowExpand').checked = false; });
   $('loraFile').onchange = e => uploadLora(e.target.files[0]);
   $('settingsButton').onclick = () => $('settingsDialog').showModal();
   $('settingsDialog').addEventListener('close', () => { if ($('settingsDialog').returnValue === 'save') { for (const key of Object.keys(modelLabels)) state.settings[key] = $('model-' + key).value.trim(); localStorage.setItem('qwen-image-2-1-abliterated-playground-model-paths', JSON.stringify(state.settings)); } });
