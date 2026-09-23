@@ -76,11 +76,18 @@ for line in sys.stdin:
         diffusers = SimpleNamespace(QwenImage21Pipeline=MagicMock())
         diffusers.QwenImage21Pipeline.from_pretrained.return_value = pipe
         transformers = SimpleNamespace(Qwen3VLForConditionalGeneration=MagicMock())
-        with patch.dict('sys.modules', {'torch': torch, 'diffusers': diffusers, 'transformers': transformers}), patch.object(worker, 'verify_checkpoint'), patch.object(worker, 'assert_bf16'):
+        with patch.dict('sys.modules', {'torch': torch, 'diffusers': diffusers, 'transformers': transformers}), patch.object(worker, 'verify_checkpoint'), patch.object(worker, 'assert_bf16'), patch.dict(worker.os.environ, {'PLAYGROUND_VAE_TILING': '0'}):
             worker.load_pipeline(Path('/models'), {'offload': True, 'live_preview': True})
         self.assertEqual(pipe.model_cpu_offload_seq, 'text_encoder->transformer')
         self.assertIn('vae', pipe._exclude_from_cpu_offload)
         pipe.enable_model_cpu_offload.assert_called_once()
+        pipe.vae.disable_tiling.assert_called_once()
+        pipe.vae.enable_tiling.assert_not_called()
+        pipe.reset_mock()
+        with patch.dict('sys.modules', {'torch': torch, 'diffusers': diffusers, 'transformers': transformers}), patch.object(worker, 'verify_checkpoint'), patch.object(worker, 'assert_bf16'), patch.dict(worker.os.environ, {'PLAYGROUND_VAE_TILING': '1'}):
+            worker.load_pipeline(Path('/models'), {'offload': False})
+        pipe.vae.enable_tiling.assert_called_once()
+        pipe.vae.disable_tiling.assert_not_called()
 
     def test_cancellation_terminates_warm_worker(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(app, 'ROOT', Path(directory)), patch.object(app, 'BACKEND', 'diffusers'), patch.dict(app.os.environ, {'PLAYGROUND_KEEP_WARM': '1'}):

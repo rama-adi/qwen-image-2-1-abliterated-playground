@@ -20,7 +20,7 @@ def release_pipeline():
 
 def get_pipeline(root, request):
     global PIPELINE, PIPELINE_KEY
-    key = (str(root), bool(request.get("offload", True)), bool(request.get("live_preview", True)))
+    key = (str(root), bool(request.get("offload", True)), bool(request.get("live_preview", True)), os.environ.get("PLAYGROUND_VAE_TILING", "0") == "1")
     if PIPELINE is not None and PIPELINE_KEY == key:
         print("Reusing warm BF16 image pipeline", flush=True)
         return PIPELINE
@@ -155,7 +155,12 @@ def load_pipeline(root, request):
         torch_dtype=torch.bfloat16, local_files_only=True)
     for name in ("text_encoder", "transformer", "vae"):
         assert_bf16(getattr(pipe, name), name)
-    pipe.vae.enable_tiling()
+    tiled = os.environ.get("PLAYGROUND_VAE_TILING", "0") == "1"
+    if tiled:
+        pipe.vae.enable_tiling()
+    else:
+        pipe.vae.disable_tiling()
+    print(f"VAE tiling: {'enabled' if tiled else 'disabled'} (BF16)", flush=True)
     if request.get("offload", True):
         if request.get("live_preview", True):
             # A VAE preview must not evict the transformer on every sampling step.
@@ -193,7 +198,8 @@ def render(request):
         # The user's chosen canvas wins over the rewriter's aspect-ratio suggestion.
     metadata_path = output.parent / "metadata.json"
     metadata = json.loads(metadata_path.read_text())
-    metadata.update(prompt=prompt, seed=seed, precision="bfloat16", backend="diffusers")
+    metadata.update(prompt=prompt, seed=seed, precision="bfloat16", backend="diffusers",
+                    vae_tiling=os.environ.get("PLAYGROUND_VAE_TILING", "0") == "1")
     metadata["model_revisions"] = json.loads((Path(__file__).parent / "models.lock.json").read_text())
     metadata_path.write_text(json.dumps(metadata, indent=2))
 

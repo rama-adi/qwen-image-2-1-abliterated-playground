@@ -68,6 +68,7 @@ Set these under your **RunPod template/Pod → Environment Variables**. Use the 
 | `PLAYGROUND_KEEP_WARM` | `1` | Reuse the RunPod image pipeline between renders. Set `0` to release all model memory after every render. |
 | `PLAYGROUND_REWRITER` | `1` | Set `0` to skip the optional BF16 prompt-rewriter download and hide its checkbox. This is a setting you choose, not a credential. |
 | `PLAYGROUND_DOWNLOAD_MODELS` | `1` | Keep enabled. Set `0` only after the same pinned checkpoints are already present in `/workspace/models`. |
+| `PLAYGROUND_VAE_TILING` | `0` | VAE tiling is off by default. Set `1` to reduce decoding memory at the risk of tile artifacts. Independent of live previews; restart the app after changing. |
 | `PLAYGROUND_KV_CACHE` | `1` | Set `0` to reduce inference cache memory. |
 | `PLAYGROUND_REWRITE_TOKENS` | `6144` | Maximum generated rewrite tokens. Increase if the log reports an incomplete rewrite; this uses more memory/time. |
 | `PLAYGROUND_MODEL_DIR` | `/workspace/models` | Usually leave unchanged. |
@@ -82,6 +83,12 @@ For a **private GHCR package**, create a [GitHub personal access token (classic)
 The workflow publishes the image; it does not rent a GPU or deploy paid Pods. No `RUNPOD_API_KEY` is needed for deployment through the console.
 
 Progress uses WebSockets on the same HTTP port. The generation log labels the connection as **WebSocket live** or **HTTP fallback**. After repeated socket failures, fallback polling keeps progress available and retries WebSockets every 30 seconds. Preview PNGs still load over HTTP. If fallback persists, inspect the browser's Network → WS handshake status and the Pod logs; a successful upgrade returns `101`.
+
+### VAE artifacts and tiling
+
+RunPod defaults to full-frame BF16 VAE decoding (`PLAYGROUND_VAE_TILING=0`). Tiling can introduce color differences between patches; disabling it is a diagnostic for streaks or seams, not a confirmed fix for every artifact. Compare the same prompt, nonzero seed, resolution, CFG, and steps. Full-frame decoding uses more VRAM; reduce resolution or set `PLAYGROUND_VAE_TILING=1` if decoding runs out of memory. The setting affects both reference encoding and image decoding. Disabling live previews alone does not change tiling.
+
+This setting requires the image built from the tiling-control update or later; earlier images force tiling on and ignore the variable. Restart the application to apply an environment change.
 
 ### Repeated renders and history
 
