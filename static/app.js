@@ -1,5 +1,5 @@
 const $ = id => document.getElementById(id);
-const state = { defaults: {}, settings: {}, characters: [], reference: '', sourceHistoryId: '', job: null, timer: null, history: [], selectedHistoryId: null, previewStep: 0 };
+const state = { socket: null, reconnect: null, failures: 0, defaults: {}, settings: {}, characters: [], reference: '', sourceHistoryId: '', job: null, timer: null, history: [], selectedHistoryId: null, previewStep: 0 };
 const modelLabels = { sd_cli: 'sd-cli executable', diffusion: 'Qwen Image 2.1 diffusion model', encoder: 'Heretic text encoder', vision: 'Heretic vision projector GGUF', vae: 'Qwen Image 2.1 VAE' };
 
 function addCharacter(data = {}) {
@@ -148,38 +148,90 @@ async function loadHistory() {
   state.history = result.items;
   renderHistory();
 }
-async function poll() {
-  if (!state.job) return;
-  try {
-    const job = await api('/api/jobs/' + state.job);
-    $('log').textContent = job.log || (job.status === 'starting' ? 'Starting model…' : 'Waiting for output…');
-    $('log').scrollTop = $('log').scrollHeight;
-    setStatus(job.status[0].toUpperCase() + job.status.slice(1));
-    if (job.status === 'running' && job.preview && job.preview_step > state.previewStep) {
-      state.previewStep = job.preview_step;
-      $('outputImage').src = job.preview + '?step=' + job.preview_step;
-      $('outputImage').hidden = false;
-      $('emptyState').hidden = true;
-      $('resultActions').hidden = true;
-      $('previewMeta').hidden = true;
-      $('previewBadge').textContent = `Live preview · step ${job.preview_step} / ${job.total_steps || '?'}`;
-      $('previewBadge').hidden = false;
-      setStatus(`${job.preview_step} / ${job.total_steps || '?'}`);
-    }
+async function displayProgress(job) {
+  if (job.id !== state.job) return;
+  $('log').textContent = job.log || 'Loading model…';
+  $('log').scrollTop = $('log').scrollHeight;
+  const current = job.step || 0;
+  const total = job.total_steps || 0;
+  const labels = { loading: 'Loading models', rewriting: 'Rewriting prompt', sampling: 'Sampling', preview: 'Decoding preview', decoding: 'Decoding final image' };
+  const label = labels[job.stage] || job.status;
+  const progressText = current ? `${label} · step ${current} / ${total}` : label;
+  $('progressText').textContent = progressText;
+  $('stepProgress').max = total || 1;
+  $('stepProgress').value = current;
+  $('stepProgress').hidden = !current;
+  $('streamProgress').hidden = false;
+  $('logStep').textContent = progressText;
+  setStatus(current ? `${current} / ${total}` : label);
+  if (job.status === 'running' && job.preview && job.preview_step > state.previewStep) {
+    state.previewStep = job.preview_step;
+    $('outputImage').src = job.preview + '?step=' + job.preview_step;
+    $('outputImage').hidden = false;
+    $('emptyState').hidden = true;
+    $('resultActions').hidden = true;
+    $('previewMeta').hidden = true;
+    $('previewBadge').textContent = `Live preview · step ${job.preview_step} / ${total}`;
+    $('previewBadge').hidden = false;
+  }
+  if (['done', 'error', 'cancelled'].includes(job.status)) {
+    state.job = null;
+    stopStream();
+    setBusy(false);
+    $('previewBadge').hidden = true;
+    $('progressText').textContent = job.status === 'done' ? 'Image complete' : job.status;
+    $('logStep').textContent = job.status === 'done' ? `Complete · ${total} steps` : job.status;
+    setStatus(job.status === 'done' ? 'Done' : job.status);
     if (job.status === 'done') {
-      showImage(job.image + '?t=' + Date.now()); state.selectedHistoryId = job.id;
-      state.job = null; setBusy(false); await loadHistory(); return;
+      showImage(job.image + '?t=' + Date.now());
+      state.selectedHistoryId = job.id;
+      await loadHistory();
+    } else showError(job.error || (job.status === 'cancelled' ? 'Render cancelled.' : 'Generation failed. See the log for details.'));
+  }
+}
+function stopStream() {
+  clearTimeout(state.timer); clearTimeout(state.reconnect);
+  if (state.socket) { state.socket.onclose = null; state.socket.close(); state.socket = null; }
+}
+async function poll() {
+  const id = state.job;
+  if (!id) return;
+  try { await displayProgress(await api('/api/jobs/' + id)); }
+  catch (error) { $('logStep').textContent = 'Connection interrupted; retrying…'; }
+  if (state.job === id) state.timer = setTimeout(poll, 1000);
+}
+function streamProgress() {
+  stopStream();
+  const id = state.job;
+  if (!id) return;
+  const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const socket = new WebSocket(`${protocol}//${location.host}/api/jobs/${id}/events`);
+  state.socket = socket;
+  socket.onopen = () => { state.failures = 0; };
+  socket.onmessage = event => {
+    if (state.job !== id) return;
+    try { displayProgress(JSON.parse(event.data)).catch(error => showError(error.message)); }
+    catch { $('logStep').textContent = 'Invalid progress update; reconnecting…'; socket.close(); }
+  };
+  socket.onerror = () => socket.close();
+  socket.onclose = () => {
+    if (state.job !== id) return;
+    state.failures += 1;
+    if (state.failures >= 3) {
+      $('logStep').textContent = 'Using HTTP progress fallback';
+      poll();
+    } else {
+      $('logStep').textContent = 'Reconnecting progress stream…';
+      state.reconnect = setTimeout(streamProgress, 1000 * state.failures);
     }
-    if (job.status === 'error' || job.status === 'cancelled') { $('previewBadge').hidden = true; showError(job.error || (job.status === 'cancelled' ? 'Render cancelled.' : 'Generation failed. See the log for details.')); state.job = null; setBusy(false); return; }
-    state.timer = setTimeout(poll, 1000);
-  } catch (error) { showError(error.message); state.job = null; setBusy(false); }
+  };
 }
 async function generate() {
   showError('');
   try {
     const result = await api('/api/jobs', payload()); state.job = result.id; state.previewStep = 0; setBusy(true); setStatus('Starting');
     $('log').textContent = 'Starting model…'; $('outputImage').hidden = true; $('emptyState').hidden = false; $('resultActions').hidden = true; $('previewMeta').hidden = true; $('previewBadge').hidden = true;
-    poll();
+    state.failures = 0; streamProgress();
   } catch (error) { showError(error.message); }
 }
 async function referenceFile(file) {
@@ -205,9 +257,6 @@ async function init() {
     $('settingsButton').hidden = true;
     $('vaeCpu').checked = false;
     $('vaeCpu').closest('label').hidden = true;
-    $('livePreview').checked = false;
-    $('livePreview').closest('label').hidden = true;
-    $('previewInterval').closest('label').hidden = true;
     $('offload').checked = true;
     $('cfg').value = 1;
     $('steps').value = 40;
@@ -235,6 +284,6 @@ async function init() {
   $('scene').addEventListener('input', previewPrompt);
   await loadHistory();
   if (!config.active && state.history.length) selectHistory(state.history[0]);
-  if (config.active && config.active !== 'preparing') { state.job = config.active; setBusy(true); poll(); }
+  if (config.active && config.active !== 'preparing') { state.job = config.active; setBusy(true); streamProgress(); }
 }
 init().catch(error => showError(error.message));

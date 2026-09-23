@@ -9,7 +9,7 @@
 <body>
   <header class="topbar">
     <div class="brand"><span class="brand-mark">✦</span><div><strong>qwen-image-2-1-abliterated-playground</strong><small>Qwen Image Studio</small></div></div>
-    <div class="top-actions"><span class="local-pill"><i></i> Local workspace</span><button id="settingsButton" class="ghost">⚙ Model settings</button></div>
+    <div class="top-actions"><span class="local-pill"><i></i> Your workspace</span><button id="settingsButton" class="ghost">⚙ Model settings</button></div>
   </header>
   <main class="layout">
     <section class="editor">
@@ -18,8 +18,8 @@
       <div class="card section-card">
         <div class="section-title"><span class="step">01</span><div><h2 id="sceneHeading">Scene</h2><p id="sceneHelp">The setting, action, composition, and overall idea.</p></div></div>
         <textarea id="scene" rows="5" placeholder="A young witch in a cluttered potion shop, surrounded by glass bottles, herbs, and candles. Warm evening light enters through the window."></textarea>
-        <label class="field-label" for="negative">Avoid <span class="optional">optional</span></label>
         <label class="checkbox" id="rewriteControl" hidden><input id="rewrite" type="checkbox"><span>Expand scene with Heretic <small>BF16 prompt rewriting before rendering; preserves your selected canvas size</small></span></label>
+        <label class="field-label" for="negative">Avoid <span class="optional">optional</span></label>
         <input id="negative" placeholder="Blurry details, extra limbs, text...">
       </div>
 
@@ -52,9 +52,9 @@
           <label>CFG<input id="cfg" type="number" min="0.1" max="20" step="0.1" value="6"></label>
         </div>
         <label class="checkbox"><input id="vaeCpu" type="checkbox" checked><span>Decode VAE on CPU <small>Useful on Apple Silicon; leave off on NVIDIA GPUs</small></span></label>
-        <label class="checkbox"><input id="offload" type="checkbox"><span>Keep model weights in RAM <small>Use if GPU memory runs low; little speed benefit here</small></span></label>
+        <label class="checkbox"><input id="offload" type="checkbox"><span>Keep model weights in RAM <small>Reduces GPU memory use without changing weight precision</small></span></label>
         <label class="checkbox"><input id="livePreview" type="checkbox" checked><span>Live preview <small>Shows intermediate images while sampling; each preview adds VAE decode time</small></span></label>
-        <label class="preview-frequency">Preview every <select id="previewInterval"><option value="1">1 step</option><option value="2">2 steps</option><option value="4" selected>4 steps</option><option value="6">6 steps</option><option value="8">8 steps</option></select></label>
+        <label class="preview-frequency">Preview every <select id="previewInterval"><option value="1" selected>1 step</option><option value="2">2 steps</option><option value="4">4 steps</option><option value="6">6 steps</option><option value="8">8 steps</option></select></label>
       </div>
       <details class="prompt-details"><summary>View assembled prompt</summary><pre id="promptPreview">Enter a scene to preview the prompt.</pre></details>
       <div class="generate-row"><button id="generate" class="primary" type="button">✦ Generate image</button><span>One render at a time</span></div>
@@ -62,10 +62,11 @@
     <aside class="result-panel">
       <div class="result-header"><div><div class="eyebrow">OUTPUT</div><h2>Your image</h2></div><span id="statusBadge" class="status-badge">Ready</span></div>
       <div id="canvas" class="canvas"><div id="emptyState" class="empty-state"><div class="orb">✦</div><strong>Nothing on the canvas yet</strong><p>Your generated image will appear here.</p></div><img id="outputImage" alt="Generated image" hidden><div id="previewBadge" class="preview-badge" hidden>Live preview</div></div>
+      <div id="streamProgress" class="stream-progress" hidden><span id="progressText" role="status" aria-live="polite">Loading models</span><progress id="stepProgress" value="0" max="1" hidden></progress></div>
       <div id="resultActions" class="result-actions" hidden><a id="download" class="download" download="qwen-image-2-1-abliterated-playground.png">↓ Download PNG</a><button id="editResult" class="download" type="button">✎ Edit this image</button></div>
       <div id="previewMeta" class="preview-meta" hidden></div>
       <div id="error" class="error" hidden></div>
-      <div class="progress-heading"><strong>Generation log</strong><button id="cancel" class="text-button" type="button" hidden>Cancel render</button></div>
+      <div class="progress-heading"><strong>Generation log</strong><span id="logStep" class="log-step" aria-live="polite"></span><button id="cancel" class="text-button" type="button" hidden>Cancel render</button></div>
       <pre id="log" class="log">Waiting for a render.</pre>
     </aside>
     <aside class="history-panel">

@@ -25,4 +25,4 @@ LABEL org.opencontainers.image.source="https://github.com/rama-adi/qwen-image-2-
 EXPOSE 8765
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60m --retries=3 \
     CMD python -c 'import urllib.request; urllib.request.urlopen("http://127.0.0.1:8765/healthz", timeout=3)'
-ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/playground-entrypoint"]
+ENTRYPOINT ["/usr/bin/tini", "-g", "--", "/usr/local/bin/playground-entrypoint"]

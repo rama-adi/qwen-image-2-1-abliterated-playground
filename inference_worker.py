@@ -4,6 +4,44 @@ import json
 import os
 from pathlib import Path
 import sys
+import struct
+
+
+def emit_progress(**event):
+    print("PLAYGROUND_EVENT " + json.dumps(event), flush=True)
+
+
+def save_preview(pipe, packed_latents, request, step):
+    """Decode target latents with the same BF16 VAE as the final image."""
+    import torch
+    latents = pipe._unpack_latents(packed_latents.detach(), request["height"], request["width"], pipe.vae_scale_factor)
+    latents = latents.to(pipe.vae.dtype)
+    mean = torch.tensor(pipe.vae.config.latents_mean, device=latents.device, dtype=latents.dtype).view(1, pipe.vae.config.z_dim, 1, 1, 1)
+    std = torch.tensor(pipe.vae.config.latents_std, device=latents.device, dtype=latents.dtype).view(1, pipe.vae.config.z_dim, 1, 1, 1)
+    decoded = pipe.vae.decode(latents * std + mean, return_dict=False)[0][:, :, 0]
+    image = pipe.image_processor.postprocess(decoded, output_type="pil")[0]
+    index = (step - 1) // request.get("preview_interval", 1)
+    target = Path(request["output"]).parent / f"preview_{index:03d}.png"
+    temporary = target.with_suffix(".tmp")
+    image.save(temporary, format="PNG")
+    temporary.replace(target)
+
+
+def verify_checkpoint(directory):
+    """Check stored tensor dtypes before a loader can cast them to BF16."""
+    files = sorted(Path(directory).glob("*.safetensors"))
+    if not files:
+        raise ValueError(f"No safetensors checkpoint found in {directory}")
+    for file in files:
+        with file.open("rb") as stream:
+            size = struct.unpack("<Q", stream.read(8))[0]
+            if size > 100 * 1024 * 1024:
+                raise ValueError(f"Invalid safetensors header in {file}")
+            header = json.loads(stream.read(size))
+        bad = {item["dtype"] for key, item in header.items()
+               if key != "__metadata__" and item["dtype"] not in {"BF16", "F32", "I64", "BOOL"}}
+        if bad:
+            raise ValueError(f"{file.name} contains non-BF16/FP32 weights: {sorted(bad)}")
 
 
 def parse_rewrite(text):
@@ -50,6 +88,7 @@ def rewrite_prompt(prompt, root):
             return scores
 
     checkpoint = root / "rewriter"
+    verify_checkpoint(checkpoint)
     system_prompt = (checkpoint / "system_prompt.txt").read_text()
     processor = AutoProcessor.from_pretrained(checkpoint, local_files_only=True)
     model = AutoModelForImageTextToText.from_pretrained(
@@ -82,7 +121,7 @@ def render(request):
     from transformers import Qwen3VLForConditionalGeneration
     from PIL import Image
 
-    if not torch.cuda.is_available() or not torch.cuda.is_bf16_supported():
+    if not torch.cuda.is_available() or not torch.cuda.is_bf16_supported(including_emulation=False):
         raise RuntimeError("RunPod requires an NVIDIA GPU with native BF16 support (Ampere or newer).")
     root = Path(os.environ.get("PLAYGROUND_MODEL_DIR", "/workspace/models"))
     output = Path(request["output"])
@@ -93,6 +132,7 @@ def render(request):
         if request.get("input_mode") == "edit":
             raise ValueError("BF16 PE-T2I rewrites new scenes only. Disable rewriting for image edits.")
         print("Rewriting prompt with BF16 Heretic PE-T2I…", flush=True)
+        emit_progress(stage="rewriting", step=0)
         result = rewrite_prompt(prompt, root)
         (output.parent / "rewrite.json").write_text(json.dumps(result, indent=2))
         prompt = result["rewritten_prompt"]
@@ -100,9 +140,13 @@ def render(request):
     metadata_path = output.parent / "metadata.json"
     metadata = json.loads(metadata_path.read_text())
     metadata.update(prompt=prompt, seed=seed, precision="bfloat16", backend="diffusers")
+    metadata["model_revisions"] = json.loads((Path(__file__).parent / "models.lock.json").read_text())
     metadata_path.write_text(json.dumps(metadata, indent=2))
 
     print("Loading BF16 Heretic encoder and official BF16 DiT / VAE…", flush=True)
+    emit_progress(stage="loading", step=0)
+    for directory in (root / "encoder", root / "pipeline" / "transformer", root / "pipeline" / "vae"):
+        verify_checkpoint(directory)
     encoder = Qwen3VLForConditionalGeneration.from_pretrained(
         root / "encoder", dtype=torch.bfloat16, local_files_only=True)
     pipe = QwenImage21Pipeline.from_pretrained(root / "pipeline", text_encoder=encoder,
@@ -116,7 +160,15 @@ def render(request):
         pipe.to("cuda")
 
     def progress(_pipe, step, _timestep, tensors):
+        current = step + 1
         print(f"Sampling {step + 1}/{request['steps']}", flush=True)
+        emit_progress(stage="sampling", step=current)
+        if request.get("live_preview", True) and (current % request.get("preview_interval", 1) == 0 or current == request["steps"]):
+            emit_progress(stage="preview", step=current)
+            save_preview(_pipe, tensors["latents"], request, current)
+            emit_progress(stage="sampling", step=current, preview_step=current)
+        if current == request["steps"]:
+            emit_progress(stage="decoding", step=current)
         return tensors
 
     image = Image.open(request["reference"]).convert("RGBA") if request.get("reference") else None

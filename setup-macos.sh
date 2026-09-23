@@ -8,12 +8,15 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
   exit 1
 fi
 
-for command in git cmake curl; do
+for command in git cmake curl python3; do
   if ! command -v "$command" >/dev/null; then
     echo "Missing $command. Install it before running this script." >&2
     exit 1
   fi
 done
+
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements-ui.txt
 
 if [[ ! -d stable-diffusion.cpp ]]; then
   git clone https://github.com/leejet/stable-diffusion.cpp.git
@@ -51,4 +54,4 @@ download mmproj-qwen3vl_8b_heretic-f16.gguf 1159030464 \
 download qwen_image_2.1_vae_bf16.safetensors 675509688 \
   https://huggingface.co/Comfy-Org/Qwen-Image-2.1/resolve/main/vae/qwen_image_2.1_vae_bf16.safetensors
 
-echo "Setup complete. Run: python3 app.py"
+echo "Setup complete. Run: .venv/bin/python app.py"

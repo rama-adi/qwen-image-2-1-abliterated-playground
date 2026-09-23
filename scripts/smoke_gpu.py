@@ -21,7 +21,7 @@ def api(path, body=None):
 def render(extra):
     body = dict(scene='A small red sailboat on a calm blue lake, watercolor illustration.',
                 width=512, height=512, steps=1, cfg=1, seed=42, offload=True,
-                live_preview=False, input_mode='style')
+                live_preview=True, preview_interval=1, input_mode='style')
     body.update(extra)
     job_id = api('/api/jobs', body)['id']
     deadline = time.monotonic() + 1800
@@ -32,6 +32,8 @@ def render(extra):
         if job['status'] == 'done':
             with urlopen(Request(base + job['image'], headers=headers), timeout=60) as response:
                 assert response.read(8) == b'\x89PNG\r\n\x1a\n'
+            assert job['step'] == body['steps'], 'Missing final sampling progress'
+            assert job['preview'], 'Missing VAE preview'
             print(job['log'])
             print('Passed:', job_id, flush=True)
             return job_id

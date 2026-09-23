@@ -10,6 +10,7 @@ import mimetypes
 import os
 from pathlib import Path
 import re
+import select
 import shutil
 import subprocess
 import sys
@@ -122,7 +123,9 @@ def make_command(data: dict, reference: Path | None, output: Path) -> list[str]:
                    "output": str(output), "width": width, "height": height, "steps": steps,
                    "cfg": cfg, "seed": seed, "negative": str(data.get("negative", "")),
                    "offload": bool(data.get("offload", True)), "rewrite": bool(data.get("rewrite")),
-                   "input_mode": data.get("input_mode", "style")}
+                   "input_mode": data.get("input_mode", "style"),
+                   "live_preview": bool(data.get("live_preview", True)),
+                   "preview_interval": integer("preview_interval", 1, 20, 1)}
         request_path = output.parent / "request.json"
         request_path.write_text(json.dumps(request, indent=2))
         return [sys.executable, "-u", str(ROOT / "inference_worker.py"), str(request_path)]
@@ -155,7 +158,7 @@ def make_command(data: dict, reference: Path | None, output: Path) -> list[str]:
             "--sampling-method", "euler", "--diffusion-fa", "-W", str(width),
             "-H", str(height), "-o", str(output)]
     if data.get("live_preview", True):
-        interval = integer("preview_interval", 1, 20, 4)
+        interval = integer("preview_interval", 1, 20, 1)
         cmd += ["--preview", "vae", "--preview-interval", str(interval),
                 "--preview-path", str(output.parent / "preview_%03d.png")]
     if data.get("vae_cpu", True):
@@ -252,18 +255,76 @@ def latest_preview(directory: Path) -> tuple[Path, int] | None:
     return None
 
 
+def consume_progress(job: dict, line: str) -> None:
+    line = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", line)
+    event = None
+    if "PLAYGROUND_EVENT " in line:
+        try:
+            event = json.loads(line.split("PLAYGROUND_EVENT ", 1)[1])
+        except ValueError:
+            return
+    else:
+        match = re.search(r"\|\s*(\d+)/(\d+)\s*-\s*[\d.]+(?:s/it|it/s)", line)
+        if match and int(match[2]) == job.get("steps"):
+            event = {"stage": "sampling", "step": int(match[1])}
+        elif "decoding 1 latents" in line:
+            event = {"stage": "decoding" if job.get("step", 0) >= job.get("steps", 1) else "preview"}
+    if not isinstance(event, dict):
+        return
+    with LOCK:
+        update = {key: event[key] for key in ("stage", "step", "preview_step") if key in event}
+        if all(job.get(key) == value for key, value in update.items()):
+            return
+        job.update(update)
+        job.setdefault("events", []).append({"stage": job.get("stage", "loading"),
+            "step": job.get("step", 0), "preview_step": job.get("preview_step", 0), "status": "running"})
+
+
+def job_snapshot(job: dict) -> dict:
+    log_path = Path(job["directory"]) / "run.log"
+    log = ""
+    if log_path.exists():
+        with log_path.open("rb") as stream:
+            stream.seek(max(0, log_path.stat().st_size - 7000))
+            log = stream.read().decode("utf-8", errors="replace")
+        log = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", log).replace("\r", "\n")
+    preview = latest_preview(Path(job["directory"]))
+    return {"id": job["id"], "status": job["status"], "stage": job.get("stage", "loading"),
+            "step": job.get("step", 0), "total_steps": job.get("steps"),
+            "error": job.get("error"), "log": log,
+            "preview": f"/api/jobs/{job['id']}/preview/{preview[0].name[8:]}" if preview else None,
+            "preview_step": min(preview[1] * job.get("preview_interval", 1), job.get("steps", 30)) if preview else 0,
+            "image": f"/api/jobs/{job['id']}/image" if job["status"] == "done" else None}
+
+
 def run_job(job_id: str, cmd: list[str]) -> None:
     global ACTIVE
     job = JOBS[job_id]
     try:
         with (Path(job["directory"]) / "run.log").open("w", encoding="utf-8") as log:
-            process = subprocess.Popen(cmd, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT, text=True)
+            process = subprocess.Popen(cmd, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
             with LOCK:
                 job["process"] = process
                 job["status"] = "running"
                 cancelled = job.get("cancelled", False)
             if cancelled:
                 process.terminate()
+            pending = b""
+            while chunk := os.read(process.stdout.fileno(), 4096):
+                log.write(chunk.decode("utf-8", errors="replace"))
+                log.flush()
+                pending += chunk
+                lines = re.split(rb"[\r\n]", pending)
+                pending = lines.pop()
+                for line in lines:
+                    consume_progress(job, line.decode("utf-8", errors="replace"))
+                # Native progress bars start with CR and have no terminating newline.
+                # Parse their partial line now instead of waiting for the next step.
+                if pending:
+                    consume_progress(job, pending.decode("utf-8", errors="replace"))
+            if pending:
+                consume_progress(job, pending.decode("utf-8", errors="replace"))
+            process.stdout.close()
             code = process.wait()
         with LOCK:
             job["status"] = "cancelled" if job.get("cancelled") else ("done" if code == 0 and Path(job["output"]).is_file() else "error")
@@ -279,6 +340,77 @@ def run_job(job_id: str, cmd: list[str]) -> None:
 
 
 class Handler(BaseHTTPRequestHandler):
+    rbufsize = 0
+
+    def stream_job(self, job: dict) -> None:
+        # Same-origin Basic authentication has already run before the upgrade.
+        origin = self.headers.get("Origin")
+        if origin and urlparse(origin).netloc != self.headers.get("Host"):
+            return self.json_response(403, {"error": "WebSocket origin does not match this host."})
+        if self.headers.get("Upgrade", "").lower() != "websocket":
+            return self.json_response(426, {"error": "WebSocket upgrade required."})
+        try:
+            from wsproto import WSConnection, ConnectionType
+            from wsproto.events import Request, AcceptConnection, TextMessage, CloseConnection, Ping, Pong
+            from wsproto.utilities import RemoteProtocolError, LocalProtocolError
+        except ImportError:
+            return self.json_response(503, {"error": "Install requirements-ui.txt for WebSocket streaming."})
+        ws = WSConnection(ConnectionType.SERVER)
+        self.close_connection = True
+        upgraded = False
+        try:
+            handshake = self.requestline + "\r\n" + "".join(f"{k}: {v}\r\n" for k, v in self.headers.items()) + "\r\n"
+            ws.receive_data(handshake.encode("latin-1"))
+            if not any(isinstance(event, Request) for event in ws.events()):
+                return self.json_response(400, {"error": "Invalid WebSocket handshake."})
+            self.connection.sendall(ws.send(AcceptConnection()))
+            upgraded = True
+            cursor = len(job.get("events", []))
+            previous = None
+            last_ping = time.monotonic()
+            last_pong = last_ping
+            self.connection.settimeout(5)
+            while True:
+                with LOCK:
+                    events = job.get("events", [])[cursor:]
+                    cursor += len(events)
+                snapshot = job_snapshot(job)
+                # Preserve every sampled step even if several completed between sends.
+                for event in events:
+                    self.connection.sendall(ws.send(TextMessage(data=json.dumps({**snapshot, **event}))))
+                payload = json.dumps(snapshot)
+                if payload != previous:
+                    self.connection.sendall(ws.send(TextMessage(data=payload)))
+                    previous = payload
+                if snapshot["status"] in {"done", "error", "cancelled"}:
+                    self.connection.sendall(ws.send(CloseConnection(code=1000, reason="Job finished")))
+                    return
+                now = time.monotonic()
+                if now - last_ping >= 20:
+                    if now - last_pong > 60:
+                        return
+                    self.connection.sendall(ws.send(Ping(payload=b"progress")))
+                    last_ping = now
+                if select.select([self.connection], [], [], 0.15)[0]:
+                    chunk = self.connection.recv(4096)
+                    if not chunk:
+                        return
+                    ws.receive_data(chunk)
+                    for event in ws.events():
+                        if isinstance(event, CloseConnection):
+                            self.connection.sendall(ws.send(event.response()))
+                            return
+                        if isinstance(event, Ping):
+                            self.connection.sendall(ws.send(event.response()))
+                        elif isinstance(event, Pong):
+                            last_pong = now
+                        elif isinstance(event, TextMessage):
+                            self.connection.sendall(ws.send(CloseConnection(code=1008, reason="Progress stream is read-only")))
+                            return
+        except (OSError, RemoteProtocolError, LocalProtocolError, ValueError):
+            if not upgraded:
+                self.json_response(400, {"error": "Invalid WebSocket handshake."})
+
     def authorized(self) -> bool:
         if not PASSWORD:
             return True
@@ -288,7 +420,7 @@ class Handler(BaseHTTPRequestHandler):
             credentials = base64.b64decode(encoded, validate=True).decode("utf-8") if scheme.lower() == "basic" else ""
         except (ValueError, UnicodeDecodeError, binascii.Error):
             credentials = ""
-        if hmac.compare_digest(credentials, f"playground:{PASSWORD}"):
+        if hmac.compare_digest(credentials.encode("utf-8"), f"playground:{PASSWORD}".encode("utf-8")):
             return True
         self.send_response(401)
         self.send_header("WWW-Authenticate", 'Basic realm="qwen-image-2-1-abliterated-playground"')
@@ -321,6 +453,12 @@ class Handler(BaseHTTPRequestHandler):
         if not self.authorized():
             return
         path = urlparse(self.path).path
+        stream = re.fullmatch(r"/api/jobs/([a-f0-9]{32})/events", path)
+        if stream:
+            job = JOBS.get(stream.group(1))
+            if not job:
+                return self.json_response(404, {"error": "Job not found."})
+            return self.stream_job(job)
         if path == "/api/config":
             return self.json_response(200, {"defaults": DEFAULTS, "active": ACTIVE,
                                             "vae_cpu_default": sys.platform == "darwin",
@@ -352,15 +490,7 @@ class Handler(BaseHTTPRequestHandler):
                 if job["status"] != "done" or not file.is_file():
                     return self.json_response(404, {"error": "Image is not ready."})
                 return self.send_file(file, "image/png")
-            log_path = Path(job["directory"]) / "run.log"
-            log = log_path.read_text(errors="replace")[-5000:] if log_path.exists() else ""
-            preview = latest_preview(Path(job["directory"]))
-            return self.json_response(200, {"id": job["id"], "status": job["status"],
-                                            "error": job.get("error"), "log": log,
-                                            "preview": f"/api/jobs/{job['id']}/preview/{preview[0].name[8:]}" if preview else None,
-                                            "preview_step": min(preview[1] * job.get("preview_interval", 4), job.get("steps", 30)) if preview else 0,
-                                            "total_steps": job.get("steps"),
-                                            "image": f"/api/jobs/{job['id']}/image" if job["status"] == "done" else None})
+            return self.json_response(200, job_snapshot(job))
         file = STATIC / ("index.html" if path == "/" else path.lstrip("/"))
         if not file.resolve().is_relative_to(STATIC.resolve()) or not file.is_file():
             return self.send_error(404)
@@ -406,8 +536,8 @@ class Handler(BaseHTTPRequestHandler):
                     (directory / "metadata.json").write_text(json.dumps(metadata, indent=2))
                     job = {"id": job_id, "directory": str(directory), "output": str(output),
                            "steps": int(data.get("steps", 30)),
-                           "preview_interval": int(data.get("preview_interval", 4)) if data.get("live_preview", True) else 0,
-                           "status": "starting"}
+                           "preview_interval": int(data.get("preview_interval", 1)) if data.get("live_preview", True) else 0,
+                           "status": "starting", "stage": "loading", "step": 0, "events": []}
                     with LOCK:
                         JOBS[job_id] = job
                         ACTIVE = job_id

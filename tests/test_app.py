@@ -4,14 +4,27 @@ from pathlib import Path
 import subprocess
 import tempfile
 import time
+import struct
 import unittest
 from unittest.mock import patch
 
 import app
-from inference_worker import parse_rewrite
+from inference_worker import parse_rewrite, verify_checkpoint
 
 
 class BackendTests(unittest.TestCase):
+    def test_quantized_checkpoint_rejected_before_dtype_cast(self):
+        with tempfile.TemporaryDirectory() as directory:
+            file = Path(directory) / 'model.safetensors'
+            for dtype in ('BF16', 'F8_E4M3', 'I8', 'F16'):
+                header = json.dumps({'weight': {'dtype': dtype, 'shape': [1], 'data_offsets': [0, 2]}}).encode()
+                file.write_bytes(struct.pack('<Q', len(header)) + header + b'\0\0')
+                if dtype == 'BF16':
+                    verify_checkpoint(directory)
+                else:
+                    with self.assertRaises(ValueError):
+                        verify_checkpoint(directory)
+
     def test_bf16_command_ignores_client_model_path_and_preserves_input(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(app, 'BACKEND', 'diffusers'):
             output = Path(directory) / 'image.png'

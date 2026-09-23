@@ -7,3 +7,5 @@ huggingface-hub==1.32.0
 safetensors==0.8.0
 Pillow==12.3.0
 diffusers @ git+https://github.com/huggingface/diffusers.git@0377f0c1b34e3ff313d41edad1bd79c2ed8bb5ec
+wsproto==1.2.0
+h11==0.16.0

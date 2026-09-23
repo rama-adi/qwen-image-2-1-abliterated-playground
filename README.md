@@ -13,9 +13,11 @@ A browser playground for Qwen Image 2.1 with a Heretic text encoder: scene and c
 | VAE | Official Qwen Image 2.1 BF16 | Official Qwen Image 2.1 BF16 |
 | Optional scene rewriter | Not integrated; use an external llama.cpp rewriter if needed | Heretic PE-T2I BF16; included in first-boot downloads |
 | Engine | stable-diffusion.cpp / Metal | PyTorch / CUDA / Diffusers |
-| Intermediate image preview | Supported | Step progress in the log; final image on completion |
+| Intermediate image preview | Every step by default | Every step by default using the BF16 VAE |
 
 Heretic modifies the language components. The DiT and VAE remain official weights; they are not advertised here as abliterated derivatives. Reduced refusal scores in the model cards are not a guarantee about every output. BF16 is the native unquantized checkpoint precision, not FP32 arithmetic throughout; architecture-required FP32 parameters/operations remain full precision. This is an experimental single-user application. Users are responsible for their inputs and outputs.
+
+The RunPod template title is **Qwen Image 2.1 Uncensored Quickstart**. A [paste-ready template description](docs/runpod-description.md) is included.
 
 ## RunPod: deploy the published image
 
@@ -27,6 +29,7 @@ Heretic modifies the language components. The DiT and VAE remain official weight
    | --- | --- |
    | Container image | `ghcr.io/rama-adi/qwen-image-2-1-abliterated-playground:latest` |
    | GPU | Start with one RTX A6000 48 GB, L40/L40S 48 GB, or A100 80 GB |
+   | Host driver | Must support CUDA 12.8 (the image runtime) |
    | Host RAM | At least 64 GB; 96 GB gives more headroom |
    | Container disk | 30 GB |
    | Persistent/network volume | 120 GB or more, mounted at `/workspace` |
@@ -45,7 +48,7 @@ GPU sizing above is an estimate, not a measured peak guarantee. The BF16 image p
 
 **GitHub Actions needs no manually created secrets.** It uses GitHub's automatic `GITHUB_TOKEN` with job-scoped `packages: write`. No Docker Hub account, Hugging Face token, or RunPod API key is required to build and publish this image. If Actions is disabled, enable it under repository **Settings → Actions → General**.
 
-Set these under your **RunPod template/Pod → Environment Variables**:
+Set these under your **RunPod template/Pod → Environment Variables**. Use the **key icon / RunPod Secrets** for `PLAYGROUND_PASSWORD` and `HF_TOKEN`; ordinary environment-variable fields are not encrypted. [`.env.example`](.env.example) lists the common values; the application does not automatically load `.env` files.
 
 | Variable | Required? / default | Where to get it / purpose |
 | --- | --- | --- |
@@ -89,7 +92,7 @@ Install Xcode command-line tools, Git, Python 3, and CMake (`brew install cmake`
 
 ```bash
 bash setup-macos.sh
-python3 app.py
+.venv/bin/python app.py
 ```
 
 Open [http://127.0.0.1:8765](http://127.0.0.1:8765). No password is required while bound to localhost. Start at 768×768 on a 24 GB Apple Silicon Mac with **Decode VAE on CPU** enabled; reduce to 512×512 if needed. Setup downloads approximately 11 GB:
@@ -98,17 +101,21 @@ Open [http://127.0.0.1:8765](http://127.0.0.1:8765). No password is required whi
 - `qwen3vl_8b_heretic-Q4_K_M.gguf` and `mmproj-qwen3vl_8b_heretic-f16.gguf` — [Heretic encoder](https://huggingface.co/pottokao/Qwen-Image-2.1-Text-Encoder-Heretic-GGUF)
 - `qwen_image_2.1_vae_bf16.safetensors` — [official VAE](https://huggingface.co/Comfy-Org/Qwen-Image-2.1/tree/main/vae)
 
-Model paths can be changed in **Model settings** on Mac. RunPod deliberately ignores browser-supplied model paths and uses its pinned BF16 checkpoint directories. Live previews add a VAE decode every few steps and can slow down Mac renders. Images and metadata persist under `outputs/` locally or `/workspace/outputs` on RunPod.
+Setup creates a `.venv` with the small WebSocket transport dependency. If you already have the models, install it with `python3 -m venv .venv` followed by `.venv/bin/python -m pip install -r requirements-ui.txt`.
+
+Model paths can be changed in **Model settings** on Mac. RunPod deliberately ignores browser-supplied model paths and uses its pinned BF16 checkpoint directories. Progress streams through an authenticated WebSocket on the same port as the UI, with heartbeat, reconnection, and HTTP polling fallback. The image area and log both show the current sampling step. Live previews default to every step on both engines; each preview adds a VAE decode and can slow down renders considerably. Increase the interval or disable previews for speed. RunPod previews use the same BF16 VAE, without a quantized preview model. Images and metadata persist under `outputs/` locally or `/workspace/outputs` on RunPod.
 
 ## Development and validation
 
 ```bash
-python3 -m unittest discover -s tests -v
+.venv/bin/python -m unittest discover -s tests -v
 node --check static/app.js
 bash -n setup-macos.sh runpod/entrypoint.sh
 ```
 
-CI tests request validation, backend separation, rewrite parsing, and worker cleanup. It builds the Linux AMD64 image, verifies model-class imports, and smoke-tests authentication/UI startup with a volume mounted at `/workspace` before publishing. GitHub-hosted CI has no NVIDIA GPU: its smoke test explicitly skips CUDA preflight and model downloads, and **does not certify GPU inference or image quality**. The GPU smoke script supplies that additional check on your deployed Pod.
+Local Mac smoke tests on 2026-09-23 generated valid 512×512 PNGs with the quantized models, including a two-step run with a VAE preview after every step and browser WebSocket updates. This verifies loading and generation, not image quality.
+
+CI tests request validation, backend separation, rejection of quantized checkpoint tensors before casting, rewrite parsing, worker cleanup, authenticated WebSocket streaming, per-step event ordering, and reconnection. The workflow builds the Linux AMD64 image, verifies model-class imports, and smoke-tests authentication/UI startup with a volume mounted at `/workspace` before publishing. GitHub-hosted CI has no NVIDIA GPU: its smoke test explicitly skips CUDA preflight and model downloads, and **does not certify GPU inference or image quality**. The GPU smoke script supplies that additional check on your deployed Pod.
 
 Manual build:
 

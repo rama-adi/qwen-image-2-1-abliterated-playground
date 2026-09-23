@@ -5,7 +5,7 @@ set -euo pipefail
 export PLAYGROUND_BACKEND=diffusers
 mkdir -p "${PLAYGROUND_MODEL_DIR:-/workspace/models}" "${PLAYGROUND_OUTPUT_DIR:-/workspace/outputs}"
 if [[ "${PLAYGROUND_REQUIRE_CUDA:-1}" == 1 ]]; then
-  python -c 'import torch; assert torch.cuda.is_available(), "No CUDA GPU attached"; assert torch.cuda.is_bf16_supported(), "GPU must support native BF16"; print(torch.cuda.get_device_name(0))'
+  python -c 'import torch; assert torch.cuda.is_available(), "No CUDA GPU attached"; assert torch.cuda.is_bf16_supported(including_emulation=False), "GPU must support native BF16"; print(torch.cuda.get_device_name(0))'
 fi
 if [[ "${PLAYGROUND_DOWNLOAD_MODELS:-1}" == 1 ]]; then
   args=()
